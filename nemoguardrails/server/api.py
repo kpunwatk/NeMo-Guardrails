@@ -59,6 +59,9 @@ from nemoguardrails.server.exception_handlers import (
     rail_type_not_configured_error_handler,
     validation_error_handler,
 )
+from nemoguardrails.server.manifest import build_manifest
+from nemoguardrails.server.manifest import router as manifest_router
+from nemoguardrails.server.schemas.manifest import CapabilityManifest
 from nemoguardrails.server.schemas.openai import (
     GuardrailCheckRequest,
     GuardrailCheckResponse,
@@ -103,6 +106,8 @@ class GuardrailsApp(FastAPI):
         self.single_config_id: Optional[str] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.task: Optional[asyncio.Future] = None
+        # Fork discoverability manifest, generated once at startup (see manifest.py).
+        self.manifest: Optional[CapabilityManifest] = None
 
 
 # The list of registered loggers. Can be used to send logs to various
@@ -158,6 +163,13 @@ async def lifespan(app: GuardrailsApp):
     from nemoguardrails.telemetry import DeploymentTypeEnum, set_deployment_type
 
     set_deployment_type(DeploymentTypeEnum.API.value)
+
+    # Generate the fork discoverability manifest from static metadata and live
+    # route introspection. Intentionally not wrapped in try/except: a broken or
+    # missing manifest should fail server startup outright rather than serve a
+    # stale/broken manifest or require the /v1/health liveness check (which
+    # has no dependency on server state today) to encode this failure.
+    app.manifest = build_manifest(app)
 
     challenges_files = os.path.join(app.rails_config_path, "challenges.json")
 
@@ -822,6 +834,9 @@ async def guardrail_check(body: GuardrailCheckRequest, request: Request):
 from nemoguardrails.server.checks import router as checks_router  # noqa: E402
 
 app.include_router(checks_router)
+
+# Include fork discoverability manifest router
+app.include_router(manifest_router)
 
 
 # By default, there are no challenges
