@@ -15,6 +15,8 @@
 
 """Tests for the fork discoverability capability manifest endpoint."""
 
+from urllib.parse import urlparse
+
 import pytest
 
 pytest.importorskip("openai", reason="openai is required for server tests")
@@ -81,7 +83,7 @@ def test_manifest_documentation_pointers_distinguish_fork_from_upstream():
 
     docs = response.json()["documentation"]
     assert any("CLAUDE.md" in d["url"] for d in docs)
-    upstream_entry = next(d for d in docs if "docs.nvidia.com" in d["url"])
+    upstream_entry = next(d for d in docs if urlparse(d["url"]).hostname == "docs.nvidia.com")
     assert "upstream" in upstream_entry["description"].lower()
 
 
