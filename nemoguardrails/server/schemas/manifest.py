@@ -45,6 +45,21 @@ class ManifestDocumentationPointer(BaseModel):
     )
 
 
+class ManifestRailModule(BaseModel):
+    """A built-in guardrail library module and the Colang flows it provides in this build.
+
+    Modules excluded at build time by `scripts/filter_guardrails.py` (closed-source
+    guardrails, per `scripts/provider-list.yaml`) do not appear here even though they
+    exist upstream -- this is the fork/upstream rail delta.
+    """
+
+    name: str = Field(description="Guardrail library module name, e.g. 'self_check' or 'jailbreak_detection'.")
+    flows: List[str] = Field(
+        default_factory=list,
+        description="Names of the Colang flows this module defines, usable in rails.input/output/retrieval.flows.",
+    )
+
+
 class ManifestIntegration(BaseModel):
     """TrustyAI platform integration points."""
 
@@ -65,3 +80,7 @@ class CapabilityManifest(BaseModel):
     )
     documentation: List[ManifestDocumentationPointer] = Field(default_factory=list)
     integration: ManifestIntegration
+    rails: List[ManifestRailModule] = Field(
+        default_factory=list,
+        description="Built-in guardrail library modules present in this build and the flows they provide.",
+    )

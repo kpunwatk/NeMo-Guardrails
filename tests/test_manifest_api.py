@@ -107,6 +107,20 @@ def test_manifest_does_not_leak_env_var_values(monkeypatch):
     assert "internal-secret-host" not in response.text
 
 
+def test_manifest_lists_library_rail_modules_and_flows():
+    """The rails catalog lists built-in guardrail modules with their Colang flow names.
+
+    This is the fork/upstream rail delta: modules removed at build time by
+    `scripts/filter_guardrails.py` won't appear in a filtered image, but in
+    this dev checkout every library module is present on disk.
+    """
+    response = client.get(MANIFEST_PATH)
+
+    rails = {r["name"]: r["flows"] for r in response.json()["rails"]}
+    assert rails["self_check"] == ["self check facts", "self check input", "self check output"]
+    assert rails["jailbreak_detection"] == ["jailbreak detection heuristics", "jailbreak detection model"]
+
+
 def test_unregistered_well_known_path_returns_404():
     """A request to an unregistered well-known path returns 404, same as any missing route."""
     response = client.get("/.well-known/does-not-exist.json")
