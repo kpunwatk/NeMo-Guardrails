@@ -28,12 +28,14 @@ import yaml
 from fastapi import APIRouter, Request
 
 from nemoguardrails import __version__
+from nemoguardrails.colang import parse_colang_file
 from nemoguardrails.server.schemas.manifest import (
     CapabilityManifest,
     ManifestDocumentationPointer,
     ManifestEndpoint,
     ManifestIdentity,
     ManifestIntegration,
+    ManifestRailModule,
 )
 
 log = logging.getLogger(__name__)
@@ -87,6 +89,52 @@ def _iter_routes(routes):
             yield route
 
 
+# Flow discovery below only targets Colang 1.0. `LLMRails.__init__` (the code
+# this mirrors) only walks the guardrails library for flow loading when
+# `colang_version == "1.0"` -- it has its own `# TODO: decide on the default
+# flows for 2.x`. Reporting flow availability for 2.x configs isn't a
+# well-defined thing this fork resolves yet, so don't claim it here either.
+_RAIL_FLOWS_COLANG_VERSION = "1.0"
+
+_LIBRARY_PATH = os.path.normpath(os.path.join(os.path.dirname(__file__), "..", "library"))
+
+
+def _discover_library_rails() -> list:
+    """Discover built-in guardrail modules and the Colang flows they provide in this build.
+
+    Mirrors the library-loading walk in `LLMRails.__init__`: parses every `.co`
+    file under `nemoguardrails/library` with the same version-aware,
+    dialect-detecting `parse_colang_file` used at runtime, rather than
+    hand-maintaining a list that can drift from what's actually loadable.
+
+    Modules removed at build time by `scripts/filter_guardrails.py` (per the
+    closed-source list in `scripts/provider-list.yaml`) simply aren't on disk
+    in this build, so they don't appear here -- that absence is the
+    fork/upstream rail delta.
+    """
+    modules: dict = {}
+
+    for root, dirs, files in os.walk(_LIBRARY_PATH):
+        dirs.sort()
+        relative_root = os.path.relpath(root, _LIBRARY_PATH)
+        if relative_root == os.curdir:
+            continue
+        module_name = relative_root.split(os.sep)[0]
+
+        for file in sorted(files):
+            if not file.endswith(".co"):
+                continue
+            full_path = os.path.join(root, file)
+            with open(full_path, encoding="utf-8") as f:
+                content = parse_colang_file(file, content=f.read(), version=_RAIL_FLOWS_COLANG_VERSION)
+            if not content:
+                continue
+            flow_names = {flow["id"] for flow in content.get("flows", []) if flow.get("id")}
+            modules.setdefault(module_name, set()).update(flow_names)
+
+    return [ManifestRailModule(name=name, flows=sorted(flows)) for name, flows in sorted(modules.items()) if flows]
+
+
 def build_manifest(app) -> CapabilityManifest:
     """Build the capability manifest from static metadata and live route introspection.
 
@@ -111,6 +159,7 @@ def build_manifest(app) -> CapabilityManifest:
         endpoints=endpoints,
         documentation=[ManifestDocumentationPointer(**entry) for entry in metadata["documentation"]],
         integration=ManifestIntegration(**metadata["integration"]),
+        rails=_discover_library_rails(),
     )
 
 
