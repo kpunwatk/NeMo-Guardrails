@@ -164,13 +164,6 @@ async def lifespan(app: GuardrailsApp):
 
     set_deployment_type(DeploymentTypeEnum.API.value)
 
-    # Generate the fork discoverability manifest from static metadata and live
-    # route introspection. Intentionally not wrapped in try/except: a broken or
-    # missing manifest should fail server startup outright rather than serve a
-    # stale/broken manifest or require the /v1/health liveness check (which
-    # has no dependency on server state today) to encode this failure.
-    app.manifest = build_manifest(app)
-
     challenges_files = os.path.join(app.rails_config_path, "challenges.json")
 
     if os.path.exists(challenges_files):
@@ -203,6 +196,15 @@ async def lifespan(app: GuardrailsApp):
             # If there is an `init` function, we call it with the reference to the app.
             if config_module is not None and hasattr(config_module, "init"):
                 config_module.init(app)
+
+    # Generate the fork discoverability manifest from static metadata and live
+    # route introspection. Runs after single-config-mode detection above so the
+    # manifest's config catalog reflects final app state. Intentionally not
+    # wrapped in try/except: a broken or missing manifest should fail server
+    # startup outright rather than serve a stale/broken manifest or require the
+    # /v1/health liveness check (which has no dependency on server state today)
+    # to encode this failure.
+    app.manifest = build_manifest(app)
 
     if app.auto_reload:
         app.loop = asyncio.get_running_loop()

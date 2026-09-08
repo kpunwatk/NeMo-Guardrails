@@ -121,6 +121,30 @@ def test_manifest_lists_library_rail_modules_and_flows():
     assert rails["jailbreak_detection"] == ["jailbreak detection heuristics", "jailbreak detection model"]
 
 
+def test_manifest_lists_available_config_ids():
+    """The config catalog matches /v1/rails/configs' output.
+
+    Config discovery is an upstream capability (dates to the 0.1.0 release,
+    predates this fork), not a fork delta -- it's aggregated here purely for
+    agent convenience, per a reviewer request on this PR.
+    """
+    response = client.get(MANIFEST_PATH)
+    configs_response = client.get("/v1/rails/configs")
+
+    assert response.json()["config_ids"] == sorted(c["id"] for c in configs_response.json())
+
+
+def test_manifest_config_ids_reflect_single_config_mode(monkeypatch):
+    """In single-config mode, the manifest reports the one config id, not a directory scan."""
+    monkeypatch.setattr(api.app, "single_config_mode", True)
+    monkeypatch.setattr(api.app, "single_config_id", "my-single-config")
+    api.app.manifest = build_manifest(api.app)
+
+    response = client.get(MANIFEST_PATH)
+
+    assert response.json()["config_ids"] == ["my-single-config"]
+
+
 def test_unregistered_well_known_path_returns_404():
     """A request to an unregistered well-known path returns 404, same as any missing route."""
     response = client.get("/.well-known/does-not-exist.json")
