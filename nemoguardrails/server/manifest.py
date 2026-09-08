@@ -135,6 +135,42 @@ def _discover_library_rails() -> list:
     return [ManifestRailModule(name=name, flows=sorted(flows)) for name, flows in sorted(modules.items()) if flows]
 
 
+def _has_config_file(path: str) -> bool:
+    """Check if a directory (or its 'config' subdirectory) contains a config.yml/yaml.
+
+    Duplicated from `api.py`'s private helper of the same name rather than
+    imported: `api.py` imports this module at load time, so importing back
+    from it would create a circular import.
+    """
+    for candidate in (path, os.path.join(path, "config")):
+        if os.path.exists(os.path.join(candidate, "config.yml")) or os.path.exists(
+            os.path.join(candidate, "config.yaml")
+        ):
+            return True
+    return False
+
+
+def _discover_config_ids(app) -> list:
+    """List the guardrails config IDs available on this server.
+
+    Mirrors `/v1/rails/configs` (`api.py`'s `get_rails_configs`) -- config
+    discovery itself is an upstream capability, not a fork delta, but is
+    aggregated into this single discoverability document for agent
+    convenience. Must run after `lifespan()` finalizes `app.single_config_mode`
+    / `app.single_config_id`, not before.
+    """
+    if app.single_config_mode:
+        return [app.single_config_id]
+
+    return sorted(
+        f
+        for f in os.listdir(app.rails_config_path)
+        if os.path.isdir(os.path.join(app.rails_config_path, f))
+        and f[0] not in (".", "_")
+        and _has_config_file(os.path.join(app.rails_config_path, f))
+    )
+
+
 def build_manifest(app) -> CapabilityManifest:
     """Build the capability manifest from static metadata and live route introspection.
 
@@ -160,6 +196,7 @@ def build_manifest(app) -> CapabilityManifest:
         documentation=[ManifestDocumentationPointer(**entry) for entry in metadata["documentation"]],
         integration=ManifestIntegration(**metadata["integration"]),
         rails=_discover_library_rails(),
+        config_ids=_discover_config_ids(app),
     )
 
 

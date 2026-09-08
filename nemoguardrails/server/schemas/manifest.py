@@ -84,3 +84,7 @@ class CapabilityManifest(BaseModel):
         default_factory=list,
         description="Built-in guardrail library modules present in this build and the flows they provide.",
     )
+    config_ids: List[str] = Field(
+        default_factory=list,
+        description="IDs of the guardrails configurations available on this server (same set as /v1/rails/configs).",
+    )
