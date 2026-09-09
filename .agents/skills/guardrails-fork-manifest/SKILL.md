@@ -1,6 +1,6 @@
 ---
 name: "guardrails-fork-manifest"
-description: "Answers questions about this repository's TrustyAI-fork-specific behavior by querying the live capability manifest endpoint instead of guessing from static docs. Use when users ask what's different about this fork, which endpoints are fork-specific, what a fork endpoint's behavioral contract is, or how this fork integrates with the TrustyAI NemoGuardrails CRD. Trigger keywords - fork-specific, capability manifest, ai-plugin.json, upstream delta, TrustyAI integration, NemoGuardrails CRD, what's different in this fork."
+description: "Answers questions about this repository's TrustyAI-fork-specific behavior by querying the live capability manifest endpoint instead of guessing from static docs. Use when users ask what's different about this fork, which endpoints or guardrail flows are fork-specific, what guardrails configs are available, or how this fork integrates with the TrustyAI NemoGuardrails CRD. Trigger keywords - fork-specific, capability manifest, /info endpoint, upstream delta, TrustyAI integration, NemoGuardrails CRD, what's different in this fork."
 license: "Apache-2.0"
 ---
 
@@ -27,12 +27,12 @@ install step is required beyond having the repo cloned.
 ## Finding The Manifest
 
 The manifest is served at `MANIFEST_PATH` from
-`nemoguardrails/server/manifest.py` — currently `/.well-known/ai-plugin.json`,
-explicitly provisional pending EvalHub team alignment on a platform-wide
-Agent Discoverability contract. Check that file if this doesn't resolve.
+`nemoguardrails/server/manifest.py` — currently `/info`, explicitly
+provisional pending EvalHub team alignment on a platform-wide Agent
+Discoverability contract. Check that file if this doesn't resolve.
 
 1. **Local dev server**: if the user is running `nemoguardrails server`
-   locally, fetch `http://<host>:<port>/.well-known/ai-plugin.json` directly.
+   locally, fetch `http://<host>:<port>/info` directly.
 2. **In-cluster deployment (via the TrustyAI operator)**: the URL is not
    hardcoded. Read it from the `NemoGuardrails` CR annotation
    `trustyai.opendatahub.io/nemo-guardrails-manifest-url`, e.g.:
@@ -52,7 +52,7 @@ leaf component with no Route/HTTPRoute). If a direct GET fails:
 
 1. Tell the user to port-forward to the Service before retrying, e.g.:
    `oc port-forward svc/<cr-name> <local-port>:<service-port>`, then fetch
-   `http://localhost:<local-port>/.well-known/ai-plugin.json`.
+   `http://localhost:<local-port>/info`.
 2. If port-forwarding isn't possible or the user declines, say so explicitly
    and fall back to `CLAUDE.md`'s "Key fork changes" section as a
    best-effort, potentially stale answer — do not silently fabricate
@@ -63,7 +63,7 @@ Do not treat an unreachable manifest as a hard failure; degrade gracefully.
 ## Using The Manifest Content
 
 The manifest (`CapabilityManifest` in
-`nemoguardrails/server/schemas/manifest.py`) has four sections:
+`nemoguardrails/server/schemas/manifest.py`) has six sections:
 
 - `identity` — fork name, installed `nemoguardrails` version, and a
   human-written summary of how this fork diverges from upstream.
@@ -76,6 +76,15 @@ The manifest (`CapabilityManifest` in
   upstream docs.
 - `integration` — the NemoGuardrails CRD API group/version and configuration
   environment variables this deployment responds to.
+- `rails` — built-in guardrail library modules actually present in this
+  build, each with the Colang flow names they provide. Modules excluded at
+  build time (closed-source guardrails, per `scripts/filter_guardrails.py`)
+  simply won't appear here even though they exist upstream -- this is the
+  fork/upstream rail delta, not a list of everything NeMo Guardrails supports.
+- `configs` — a map of available guardrails config id to a structural summary
+  (model engines, enabled rail flows). This is deliberately not the raw
+  config content: prompts, instructions, and model connection details are
+  excluded since this endpoint has no built-in auth.
 
 Quote the manifest's actual field values in the answer (e.g. the exact
 endpoint path and behavioral contract text) rather than paraphrasing from
