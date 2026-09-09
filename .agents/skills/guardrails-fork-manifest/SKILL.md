@@ -1,6 +1,6 @@
 ---
 name: "guardrails-fork-manifest"
-description: "Answers questions about this repository's TrustyAI-fork-specific behavior by querying the live capability manifest endpoint instead of guessing from static docs. Use when users ask what's different about this fork, which endpoints or guardrail flows are fork-specific, what guardrails configs are available, or how this fork integrates with the TrustyAI NemoGuardrails CRD. Trigger keywords - fork-specific, capability manifest, /info endpoint, upstream delta, TrustyAI integration, NemoGuardrails CRD, what's different in this fork."
+description: "Answers questions about this repository's TrustyAI-fork-specific behavior by querying the live capability manifest endpoint instead of guessing from static docs. Use when users ask what's different about this fork, which endpoints or guardrail flows are fork-specific, what guardrails configs are available, or how this fork integrates with the TrustyAI NemoGuardrails CRD. Trigger keywords - fork-specific, capability manifest, /admin/info endpoint, upstream delta, TrustyAI integration, NemoGuardrails CRD, what's different in this fork."
 license: "Apache-2.0"
 ---
 
@@ -27,12 +27,12 @@ install step is required beyond having the repo cloned.
 ## Finding The Manifest
 
 The manifest is served at `MANIFEST_PATH` from
-`nemoguardrails/server/manifest.py` — currently `/info`, explicitly
+`nemoguardrails/server/manifest.py` — currently `/admin/info`, explicitly
 provisional pending EvalHub team alignment on a platform-wide Agent
 Discoverability contract. Check that file if this doesn't resolve.
 
 1. **Local dev server**: if the user is running `nemoguardrails server`
-   locally, fetch `http://<host>:<port>/info` directly.
+   locally, fetch `http://<host>:<port>/admin/info` directly.
 2. **In-cluster deployment (via the TrustyAI operator)**: the URL is not
    hardcoded. Read it from the `NemoGuardrails` CR annotation
    `trustyai.opendatahub.io/nemo-guardrails-manifest-url`, e.g.:
@@ -52,7 +52,7 @@ leaf component with no Route/HTTPRoute). If a direct GET fails:
 
 1. Tell the user to port-forward to the Service before retrying, e.g.:
    `oc port-forward svc/<cr-name> <local-port>:<service-port>`, then fetch
-   `http://localhost:<local-port>/info`.
+   `http://localhost:<local-port>/admin/info`.
 2. If port-forwarding isn't possible or the user declines, say so explicitly
    and fall back to `CLAUDE.md`'s "Key fork changes" section as a
    best-effort, potentially stale answer — do not silently fabricate
