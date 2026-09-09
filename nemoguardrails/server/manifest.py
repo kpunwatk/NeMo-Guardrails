@@ -46,7 +46,7 @@ router = APIRouter()
 # NOTE: final path is pending alignment with the EvalHub team on a
 # platform-wide Agent Discoverability contract (RHAI-517 AC). Treat as
 # provisional until that alignment happens.
-MANIFEST_PATH = "/info"
+MANIFEST_PATH = "/admin/info"
 
 _METADATA_FILE = os.path.join(os.path.dirname(__file__), "fork_metadata.yaml")
 
