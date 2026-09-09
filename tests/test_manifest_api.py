@@ -22,6 +22,7 @@ import pytest
 pytest.importorskip("openai", reason="openai is required for server tests")
 from fastapi.testclient import TestClient
 
+from nemoguardrails import utils
 from nemoguardrails.server import api
 from nemoguardrails.server.manifest import MANIFEST_PATH, build_manifest
 
@@ -121,32 +122,61 @@ def test_manifest_lists_library_rail_modules_and_flows():
     assert rails["jailbreak_detection"] == ["jailbreak detection heuristics", "jailbreak detection model"]
 
 
-def test_manifest_lists_available_config_ids():
-    """The config catalog matches /v1/rails/configs' output.
+def test_manifest_lists_available_configs_with_structural_summary(monkeypatch):
+    """The config catalog covers the same ids as /v1/rails/configs, each with a safe summary.
 
-    Config discovery is an upstream capability (dates to the 0.1.0 release,
-    predates this fork), not a fork delta -- it's aggregated here purely for
-    agent convenience, per a reviewer request on this PR.
+    Config discovery itself is an upstream capability (dates to the 0.1.0
+    release, predates this fork), not a fork delta -- it's aggregated here,
+    with a structural summary per config, purely for agent convenience per a
+    reviewer request on this PR. The summary is deliberately not the raw
+    config content (see ManifestConfigSummary's docstring for why).
+
+    Explicitly pins rails_config_path/single_config_mode rather than relying
+    on api.app's defaults: it's a module-level singleton shared across test
+    files, and other server tests mutate it without resetting.
     """
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", utils.get_examples_data_path("bots"))
+    api.app.manifest = build_manifest(api.app)
+
     response = client.get(MANIFEST_PATH)
     configs_response = client.get("/v1/rails/configs")
 
-    assert response.json()["config_ids"] == sorted(c["id"] for c in configs_response.json())
+    configs = response.json()["configs"]
+    assert set(configs.keys()) == {c["id"] for c in configs_response.json()}
+    assert configs["abc"]["model_engines"] == ["openai"]
+    assert configs["abc"]["enabled_flows"] == ["self check input", "self check output"]
 
 
-def test_manifest_config_ids_reflect_single_config_mode(monkeypatch):
-    """In single-config mode, the manifest reports the one config id, not a directory scan."""
-    monkeypatch.setattr(api.app, "single_config_mode", True)
-    monkeypatch.setattr(api.app, "single_config_id", "my-single-config")
+def test_manifest_does_not_leak_raw_config_content(monkeypatch):
+    """The config summary excludes prompts/instructions -- config-author business logic."""
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", utils.get_examples_data_path("bots"))
     api.app.manifest = build_manifest(api.app)
 
     response = client.get(MANIFEST_PATH)
 
-    assert response.json()["config_ids"] == ["my-single-config"]
+    assert "ABC Company" not in response.text
+    assert "paid vacation" not in response.text
 
 
-def test_unregistered_well_known_path_returns_404():
-    """A request to an unregistered well-known path returns 404, same as any missing route."""
-    response = client.get("/.well-known/does-not-exist.json")
+def test_manifest_configs_reflect_single_config_mode(monkeypatch):
+    """In single-config mode, the manifest summarizes the one config directly, not a directory scan."""
+    single_config_path = utils.get_examples_data_path("bots/hello_world")
+    monkeypatch.setattr(api.app, "single_config_mode", True)
+    monkeypatch.setattr(api.app, "single_config_id", "hello_world")
+    monkeypatch.setattr(api.app, "rails_config_path", single_config_path)
+    api.app.manifest = build_manifest(api.app)
+
+    response = client.get(MANIFEST_PATH)
+
+    configs = response.json()["configs"]
+    assert set(configs.keys()) == {"hello_world"}
+    assert configs["hello_world"]["model_engines"] == ["openai"]
+
+
+def test_unregistered_path_near_manifest_returns_404():
+    """A request to an unregistered path near the manifest returns 404, same as any missing route."""
+    response = client.get("/info/does-not-exist")
 
     assert response.status_code == 404
