@@ -15,7 +15,7 @@
 
 """Schemas for the fork discoverability manifest endpoint (fork-specific)."""
 
-from typing import List
+from typing import Dict, List
 
 from pydantic import BaseModel, Field
 
@@ -60,6 +60,27 @@ class ManifestRailModule(BaseModel):
     )
 
 
+class ManifestConfigSummary(BaseModel):
+    """Structural summary of a guardrails configuration -- not its raw content.
+
+    Deliberately excludes prompts, instructions, sample_conversation, and model
+    connection details (`parameters`, `api_key_env_var`): this endpoint has no
+    built-in auth, and those fields can carry config-author business logic or
+    internal network details (e.g. a `base_url` in `Model.parameters`), the
+    same class of thing `config_schema` on `ManifestIntegration` already
+    avoids leaking for env vars.
+    """
+
+    model_engines: List[str] = Field(
+        default_factory=list,
+        description="Distinct model engine names configured (e.g. 'openai', 'nim'), not connection details.",
+    )
+    enabled_flows: List[str] = Field(
+        default_factory=list,
+        description="Rail flow names enabled via rails.input/output/retrieval.flows.",
+    )
+
+
 class ManifestIntegration(BaseModel):
     """TrustyAI platform integration points."""
 
@@ -84,7 +105,10 @@ class CapabilityManifest(BaseModel):
         default_factory=list,
         description="Built-in guardrail library modules present in this build and the flows they provide.",
     )
-    config_ids: List[str] = Field(
-        default_factory=list,
-        description="IDs of the guardrails configurations available on this server (same set as /v1/rails/configs).",
+    configs: Dict[str, ManifestConfigSummary] = Field(
+        default_factory=dict,
+        description=(
+            "Guardrails configurations available on this server (same ids as /v1/rails/configs), "
+            "each with a structural summary -- not the raw config content."
+        ),
     )

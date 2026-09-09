@@ -27,10 +27,11 @@ import os
 import yaml
 from fastapi import APIRouter, Request
 
-from nemoguardrails import __version__
+from nemoguardrails import RailsConfig, __version__
 from nemoguardrails.colang import parse_colang_file
 from nemoguardrails.server.schemas.manifest import (
     CapabilityManifest,
+    ManifestConfigSummary,
     ManifestDocumentationPointer,
     ManifestEndpoint,
     ManifestIdentity,
@@ -45,7 +46,7 @@ router = APIRouter()
 # NOTE: final path is pending alignment with the EvalHub team on a
 # platform-wide Agent Discoverability contract (RHAI-517 AC). Treat as
 # provisional until that alignment happens.
-MANIFEST_PATH = "/.well-known/ai-plugin.json"
+MANIFEST_PATH = "/info"
 
 _METADATA_FILE = os.path.join(os.path.dirname(__file__), "fork_metadata.yaml")
 
@@ -171,6 +172,54 @@ def _discover_config_ids(app) -> list:
     )
 
 
+def _config_path(app, config_id: str) -> str:
+    """Resolve a config id to its on-disk path, matching `_get_rails()`'s resolution in api.py."""
+    if app.single_config_mode:
+        return app.rails_config_path
+    return os.path.join(app.rails_config_path, config_id)
+
+
+def _summarize_config(full_path: str):
+    """Load a guardrails config and extract a safe structural summary.
+
+    Catches any loading/validation error narrowly to this one config: a
+    single malformed config directory must not take down manifest generation
+    (and therefore server startup, since `build_manifest()` isn't wrapped in
+    try/except) for the whole deployment.
+    """
+    try:
+        rails_config = RailsConfig.from_path(full_path)
+    except Exception:
+        log.warning("Skipping config at %s in manifest: failed to load", full_path, exc_info=True)
+        return None
+
+    return ManifestConfigSummary(
+        model_engines=sorted({model.engine for model in rails_config.models}),
+        enabled_flows=sorted(
+            set(rails_config.rails.input.flows)
+            | set(rails_config.rails.output.flows)
+            | set(rails_config.rails.retrieval.flows)
+        ),
+    )
+
+
+def _discover_configs(app) -> dict:
+    """Map each available guardrails config id to a structural summary.
+
+    Config discovery itself mirrors `/v1/rails/configs` (an upstream
+    capability, not a fork delta); per-config summaries are new, added for
+    agent convenience so a caller can see what each config_id enables without
+    loading it separately. Must run after `lifespan()` finalizes
+    `app.single_config_mode` / `app.single_config_id`, not before.
+    """
+    configs = {}
+    for config_id in _discover_config_ids(app):
+        summary = _summarize_config(_config_path(app, config_id))
+        if summary is not None:
+            configs[config_id] = summary
+    return configs
+
+
 def build_manifest(app) -> CapabilityManifest:
     """Build the capability manifest from static metadata and live route introspection.
 
@@ -196,7 +245,7 @@ def build_manifest(app) -> CapabilityManifest:
         documentation=[ManifestDocumentationPointer(**entry) for entry in metadata["documentation"]],
         integration=ManifestIntegration(**metadata["integration"]),
         rails=_discover_library_rails(),
-        config_ids=_discover_config_ids(app),
+        configs=_discover_configs(app),
     )
 
 
