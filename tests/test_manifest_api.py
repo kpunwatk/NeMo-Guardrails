@@ -177,6 +177,6 @@ def test_manifest_configs_reflect_single_config_mode(monkeypatch):
 
 def test_unregistered_path_near_manifest_returns_404():
     """A request to an unregistered path near the manifest returns 404, same as any missing route."""
-    response = client.get("/info/does-not-exist")
+    response = client.get("/admin/info/does-not-exist")
 
     assert response.status_code == 404
