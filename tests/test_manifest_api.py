@@ -15,6 +15,8 @@
 
 """Tests for the fork discoverability capability manifest endpoint."""
 
+import shutil
+from pathlib import Path
 from urllib.parse import urlparse
 
 import pytest
@@ -173,6 +175,25 @@ def test_manifest_configs_reflect_single_config_mode(monkeypatch):
     configs = response.json()["configs"]
     assert set(configs.keys()) == {"hello_world"}
     assert configs["hello_world"]["model_engines"] == ["openai"]
+
+
+def test_manifest_configs_refresh_after_new_config_added(tmp_path, monkeypatch):
+    """Configs added after startup appear in /admin/info without rebuilding the manifest."""
+    bots_path = Path(utils.get_examples_data_path("bots"))
+    configs_root = tmp_path / "configs"
+    shutil.copytree(bots_path / "abc", configs_root / "abc")
+
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
+    api.app.manifest = build_manifest(api.app)
+
+    initial_response = client.get(MANIFEST_PATH)
+    assert set(initial_response.json()["configs"].keys()) == {"abc"}
+
+    shutil.copytree(bots_path / "hello_world", configs_root / "hello_world")
+
+    refreshed_response = client.get(MANIFEST_PATH)
+    assert set(refreshed_response.json()["configs"].keys()) == {"abc", "hello_world"}
 
 
 def test_unregistered_path_near_manifest_returns_404():
