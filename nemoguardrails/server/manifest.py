@@ -220,6 +220,19 @@ def _discover_configs(app) -> dict:
     return configs
 
 
+def refresh_manifest_configs(app) -> None:
+    """Refresh the manifest's config catalog from the current server state.
+
+    Config ids are discovered the same way as `/v1/rails/configs` on every
+    request, but the manifest is otherwise built once at startup. Call this
+    before serving `/admin/info` so newly mounted or updated configs are
+    visible without restarting the process.
+    """
+    if app.manifest is None:
+        return
+    app.manifest.configs = _discover_configs(app)
+
+
 def build_manifest(app) -> CapabilityManifest:
     """Build the capability manifest from static metadata and live route introspection.
 
@@ -255,5 +268,11 @@ def build_manifest(app) -> CapabilityManifest:
     summary="Fork capability discoverability manifest.",
 )
 async def get_manifest(request: Request):
-    """Return the fork's capability manifest, generated once at server startup."""
+    """Return the fork's capability manifest.
+
+    Static sections (identity, endpoints, rails, integration) are generated
+    once at startup; the config catalog is refreshed on each request so it
+    stays aligned with `/v1/rails/configs`.
+    """
+    refresh_manifest_configs(request.app)
     return request.app.manifest

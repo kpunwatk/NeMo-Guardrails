@@ -106,7 +106,8 @@ class GuardrailsApp(FastAPI):
         self.single_config_id: Optional[str] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.task: Optional[asyncio.Future] = None
-        # Fork discoverability manifest, generated once at startup (see manifest.py).
+        # Fork discoverability manifest; static sections generated once at startup,
+        # config catalog refreshed on each /admin/info request (see manifest.py).
         self.manifest: Optional[CapabilityManifest] = None
 
 
