@@ -21,10 +21,10 @@ api.py and reduce the conflict surface during upstream syncs. This module is
 fork-only and has no upstream equivalent.
 """
 
+import inspect
 import logging
 import os
 
-import yaml
 from fastapi import APIRouter, Request
 
 from nemoguardrails import RailsConfig, __version__
@@ -48,25 +48,47 @@ router = APIRouter()
 # provisional until that alignment happens.
 MANIFEST_PATH = "/admin/info"
 
-_METADATA_FILE = os.path.join(os.path.dirname(__file__), "fork_metadata.yaml")
+# Tag applied to fork-specific HTTP routes that should appear in the manifest
+# catalog. Upstream routes (e.g. /v1/checks) and actions-server routes are
+# intentionally untagged and therefore excluded from introspection here.
+FORK_MANIFEST_TAG = "Fork Manifest"
 
-# Fork-specific endpoints surfaced in the manifest catalog, keyed by path.
-#
-# Deliberately excludes:
-# - /v1/checks: an upstream-inherited endpoint, not a fork delta.
-# - /v1/actions/list, /v1/actions/run: served by the separate actions_server
-#   process (nemoguardrails/actions_server/actions_server.py) and not part of
-#   this app's route table, so they can't be introspected here.
-_FORK_ENDPOINT_CONTRACTS = {
-    "/v1/guardrail/checks": (
-        "Evaluates messages against configured input/output rails without generating an LLM response."
+_FORK_NAME = "NeMo-Guardrails (TrustyAI fork)"
+_FORK_UPSTREAM_DELTA_SUMMARY = (
+    "Adds the /v1/guardrail/checks endpoint (evaluates messages against "
+    "configured input/output rails without generating an LLM response), forwards "
+    "X-* request headers to configured LLM providers with auth-token redaction in "
+    "logs, and ships a UBI9-based Dockerfile.server with baked-in models. See the "
+    "fork's CLAUDE.md \"Key fork changes\" section for the authoritative list."
+)
+_FORK_DOCUMENTATION = [
+    ManifestDocumentationPointer(
+        url="https://github.com/trustyai-explainability/NeMo-Guardrails/blob/develop/CLAUDE.md",
+        description=(
+            "TrustyAI fork changes, fork-specific endpoints, and integration points. "
+            "Authoritative source for how this deployment diverges from upstream."
+        ),
     ),
-}
-
-
-def _load_static_metadata() -> dict:
-    with open(_METADATA_FILE) as f:
-        return yaml.safe_load(f)
+    ManifestDocumentationPointer(
+        url="https://docs.nvidia.com/nemo/guardrails/_mcp/server",
+        description=(
+            "Upstream NVIDIA NeMo Guardrails documentation MCP server. Covers "
+            "general/upstream behavior only -- it does not include this fork's "
+            "/v1/guardrail/checks endpoint, TrustyAI CRD integration, or header "
+            "forwarding behavior described in this manifest."
+        ),
+    ),
+]
+_FORK_INTEGRATION = ManifestIntegration(
+    crd="trustyai.opendatahub.io/v1alpha1",
+    config_schema={
+        "MAIN_MODEL_ENGINE": "LLM engine identifier for the primary model (e.g. openai).",
+        "MAIN_MODEL_BASE_URL": "Base URL of the primary model's OpenAI-compatible endpoint.",
+        "Authorization": (
+            "Forwarded as a request header to the configured LLM provider; redacted in logs, never persisted."
+        ),
+    },
+)
 
 
 def _iter_routes(routes):
@@ -88,6 +110,32 @@ def _iter_routes(routes):
             yield from _iter_routes(nested)
         else:
             yield route
+
+
+def _route_description(route) -> str:
+    """Extract a one-line behavioral contract from FastAPI route metadata."""
+    summary = getattr(route, "summary", None)
+    if summary:
+        return summary
+    doc = inspect.getdoc(getattr(route, "endpoint", None))
+    if doc:
+        return doc.split("\n", maxsplit=1)[0].strip()
+    return getattr(route, "description", None) or ""
+
+
+def _discover_fork_endpoints(routes) -> list[ManifestEndpoint]:
+    """List fork-specific endpoints tagged for manifest discovery."""
+    endpoints: list[ManifestEndpoint] = []
+    for route in _iter_routes(routes):
+        if FORK_MANIFEST_TAG not in (getattr(route, "tags", None) or []):
+            continue
+        path = getattr(route, "path", None)
+        if not path:
+            continue
+        description = _route_description(route)
+        for method in sorted(getattr(route, "methods", None) or []):
+            endpoints.append(ManifestEndpoint(path=path, method=method, description=description))
+    return endpoints
 
 
 # Flow discovery below only targets Colang 1.0. `LLMRails.__init__` (the code
@@ -234,29 +282,16 @@ def refresh_manifest_configs(app) -> None:
 
 
 def build_manifest(app) -> CapabilityManifest:
-    """Build the capability manifest from static metadata and live route introspection.
-
-    Raises if static metadata is missing/invalid so that startup fails outright
-    rather than serving a stale or broken manifest.
-    """
-    metadata = _load_static_metadata()
-
-    endpoints = [
-        ManifestEndpoint(path=route.path, method=method, description=_FORK_ENDPOINT_CONTRACTS[route.path])
-        for route in _iter_routes(app.routes)
-        if getattr(route, "path", None) in _FORK_ENDPOINT_CONTRACTS
-        for method in sorted(getattr(route, "methods", None) or [])
-    ]
-
+    """Build the capability manifest from static metadata and live route introspection."""
     return CapabilityManifest(
         identity=ManifestIdentity(
-            name=metadata["name"],
+            name=_FORK_NAME,
             version=__version__,
-            upstream_delta_summary=metadata["upstream_delta_summary"].strip(),
+            upstream_delta_summary=_FORK_UPSTREAM_DELTA_SUMMARY,
         ),
-        endpoints=endpoints,
-        documentation=[ManifestDocumentationPointer(**entry) for entry in metadata["documentation"]],
-        integration=ManifestIntegration(**metadata["integration"]),
+        endpoints=_discover_fork_endpoints(app.routes),
+        documentation=_FORK_DOCUMENTATION,
+        integration=_FORK_INTEGRATION,
         rails=_discover_library_rails(),
         configs=_discover_configs(app),
     )
