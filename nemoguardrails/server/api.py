@@ -61,7 +61,7 @@ from nemoguardrails.server.exception_handlers import (
 )
 from nemoguardrails.server.manifest import build_manifest
 from nemoguardrails.server.manifest import router as manifest_router
-from nemoguardrails.server.schemas.manifest import CapabilityManifest
+from nemoguardrails.server.schemas.manifest import CapabilityManifest, ManifestConfigSummary
 from nemoguardrails.server.schemas.openai import (
     GuardrailCheckRequest,
     GuardrailCheckResponse,
@@ -107,8 +107,10 @@ class GuardrailsApp(FastAPI):
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.task: Optional[asyncio.Future] = None
         # Fork discoverability manifest; static sections generated once at startup,
-        # config catalog refreshed on each /admin/info request (see manifest.py).
+        # config ids rescanned on each /admin/info request with summaries cached
+        # per config id (see manifest.py).
         self.manifest: Optional[CapabilityManifest] = None
+        self.manifest_config_cache: dict[str, ManifestConfigSummary] = {}
 
 
 # The list of registered loggers. Can be used to send logs to various

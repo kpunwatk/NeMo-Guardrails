@@ -251,49 +251,67 @@ def _summarize_config(full_path: str):
     )
 
 
-def _discover_configs(app) -> dict:
-    """Map each available guardrails config id to a structural summary.
+def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
+    """Rescan config ids and return summaries, caching per config id.
 
-    Config discovery itself mirrors `/v1/rails/configs` (an upstream
-    capability, not a fork delta); per-config summaries are new, added for
-    agent convenience so a caller can see what each config_id enables without
-    loading it separately. Must run after `lifespan()` finalizes
-    `app.single_config_mode` / `app.single_config_id`, not before.
+    Config id discovery mirrors `/v1/rails/configs` on every call; expensive
+    `RailsConfig.from_path()` summarization runs only for ids not yet in
+    `app.manifest_config_cache`. Removed ids are evicted from the cache.
     """
-    configs = {}
-    for config_id in _discover_config_ids(app):
+    current_ids = _discover_config_ids(app)
+    current_id_set = set(current_ids)
+
+    for stale_id in set(app.manifest_config_cache) - current_id_set:
+        del app.manifest_config_cache[stale_id]
+
+    for config_id in current_ids:
+        if config_id in app.manifest_config_cache:
+            continue
         summary = _summarize_config(_config_path(app, config_id))
         if summary is not None:
-            configs[config_id] = summary
-    return configs
+            app.manifest_config_cache[config_id] = summary
+
+    return {config_id: app.manifest_config_cache[config_id] for config_id in current_ids if config_id in app.manifest_config_cache}
 
 
 def refresh_manifest_configs(app) -> None:
     """Refresh the manifest's config catalog from the current server state.
 
-    Config ids are discovered the same way as `/v1/rails/configs` on every
-    request, but the manifest is otherwise built once at startup. Call this
-    before serving `/admin/info` so newly mounted or updated configs are
-    visible without restarting the process.
+    Rescans config ids on every call (same as `/v1/rails/configs`) but reuses
+    cached summaries for ids already seen. Call before serving `/admin/info`
+    so newly mounted configs appear without re-summarizing the full catalog.
     """
     if app.manifest is None:
         return
-    app.manifest.configs = _discover_configs(app)
+    app.manifest.configs = _refresh_manifest_config_catalog(app)
 
 
 def build_manifest(app) -> CapabilityManifest:
-    """Build the capability manifest from static metadata and live route introspection."""
+    """Build the capability manifest from static metadata and live route introspection.
+
+    Raises if no fork-specific routes are tagged for manifest discovery so
+    startup fails rather than serving a manifest with an empty endpoint catalog.
+    """
+    endpoints = _discover_fork_endpoints(app.routes)
+    if not endpoints:
+        message = (
+            f"No routes tagged with {FORK_MANIFEST_TAG!r} were found; "
+            "the capability manifest cannot list fork-specific endpoints."
+        )
+        log.error(message)
+        raise RuntimeError(message)
+
     return CapabilityManifest(
         identity=ManifestIdentity(
             name=_FORK_NAME,
             version=__version__,
             upstream_delta_summary=_FORK_UPSTREAM_DELTA_SUMMARY,
         ),
-        endpoints=_discover_fork_endpoints(app.routes),
+        endpoints=endpoints,
         documentation=_FORK_DOCUMENTATION,
         integration=_FORK_INTEGRATION,
         rails=_discover_library_rails(),
-        configs=_discover_configs(app),
+        configs=_refresh_manifest_config_catalog(app),
     )
 
 
@@ -306,8 +324,8 @@ async def get_manifest(request: Request):
     """Return the fork's capability manifest.
 
     Static sections (identity, endpoints, rails, integration) are generated
-    once at startup; the config catalog is refreshed on each request so it
-    stays aligned with `/v1/rails/configs`.
+    once at startup; config ids are rescanned on each request and summaries
+    are cached per id so only newly seen configs pay summarization cost.
     """
     refresh_manifest_configs(request.app)
     return request.app.manifest
