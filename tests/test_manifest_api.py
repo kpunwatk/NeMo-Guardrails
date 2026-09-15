@@ -26,6 +26,7 @@ from fastapi.testclient import TestClient
 
 from nemoguardrails import utils
 from nemoguardrails.server import api
+from nemoguardrails.server import manifest as manifest_module
 from nemoguardrails.server.manifest import MANIFEST_PATH, build_manifest
 
 client = TestClient(api.app)
@@ -39,9 +40,11 @@ def setup_manifest():
     matching the convention already used by other server tests in this repo
     (state is set directly on `api.app` rather than relying on startup).
     """
+    api.app.manifest_config_cache = {}
     api.app.manifest = build_manifest(api.app)
     yield
     api.app.manifest = None
+    api.app.manifest_config_cache = {}
 
 
 def test_manifest_returns_200_with_valid_document():
@@ -194,6 +197,46 @@ def test_manifest_configs_refresh_after_new_config_added(tmp_path, monkeypatch):
 
     refreshed_response = client.get(MANIFEST_PATH)
     assert set(refreshed_response.json()["configs"].keys()) == {"abc", "hello_world"}
+
+
+def test_build_manifest_fails_when_no_fork_endpoints(monkeypatch):
+    """Startup fails if no routes carry the Fork Manifest tag."""
+    monkeypatch.setattr(manifest_module, "_discover_fork_endpoints", lambda routes: [])
+
+    with pytest.raises(RuntimeError, match="Fork Manifest"):
+        build_manifest(api.app)
+
+
+def test_refresh_manifest_configs_only_summarizes_unseen_config_ids(tmp_path, monkeypatch):
+    """Rescanning config ids reuses cached summaries; only new ids are summarized."""
+    bots_path = Path(utils.get_examples_data_path("bots"))
+    configs_root = tmp_path / "configs"
+    shutil.copytree(bots_path / "abc", configs_root / "abc")
+
+    summarize_calls: list[str] = []
+    original_summarize = manifest_module._summarize_config
+
+    def counting_summarize(full_path: str):
+        summarize_calls.append(full_path)
+        return original_summarize(full_path)
+
+    monkeypatch.setattr(manifest_module, "_summarize_config", counting_summarize)
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
+    api.app.manifest_config_cache = {}
+    api.app.manifest = build_manifest(api.app)
+
+    assert len(summarize_calls) == 1
+
+    summarize_calls.clear()
+    client.get(MANIFEST_PATH)
+    assert summarize_calls == []
+
+    shutil.copytree(bots_path / "hello_world", configs_root / "hello_world")
+
+    client.get(MANIFEST_PATH)
+    assert len(summarize_calls) == 1
+    assert set(api.app.manifest.configs.keys()) == {"abc", "hello_world"}
 
 
 def test_unregistered_path_near_manifest_returns_404():
