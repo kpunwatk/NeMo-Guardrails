@@ -66,6 +66,15 @@ from nemoguardrails.server.schemas.openai import (
     GuardrailsChatCompletionRequest,
     OpenAIModelsList,
 )
+from nemoguardrails.server.schemas.runtime import (
+    RuntimeActionsResponse,
+    RuntimeActionModel,
+    RuntimeConfigResponse,
+    RuntimeModelModel,
+    RuntimeRailFlowModel,
+    RuntimeRailsResponse,
+    RuntimeKnowledgeBaseModel,
+)
 from nemoguardrails.server.schemas.utils import (
     bot_message_to_chat_completion,
     extract_bot_message_from_response,
@@ -847,6 +856,208 @@ async def get_challenges():
     """Returns the list of available challenges for red teaming."""
 
     return challenges
+
+
+def _resolve_config_id(config_id: Optional[str]) -> str:
+    """Resolve the config_id from query parameter or single-config mode.
+
+    Args:
+        config_id: Optional config_id from query parameter
+
+    Returns:
+        The resolved config_id
+
+    Raises:
+        HTTPException: If config_id cannot be resolved or is invalid
+    """
+    if app.single_config_mode:
+        # In single-config mode, use the configured single_config_id
+        if config_id and config_id != app.single_config_id:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No guardrail configuration with id '{config_id}' found"
+            )
+        return app.single_config_id
+    else:
+        # In multi-config mode, config_id is required
+        if not config_id:
+            raise HTTPException(
+                status_code=400,
+                detail="Missing required query parameter: config_id"
+            )
+        return config_id
+
+
+@app.get(
+    "/v1/runtime/rails",
+    response_model=RuntimeRailsResponse,
+    summary="Get runtime rails configuration.",
+)
+async def get_runtime_rails(config_id: Optional[str] = None):
+    """Returns the configured rails (input, output, retrieval, dialog, action, tool) for a config."""
+    resolved_config_id = _resolve_config_id(config_id)
+
+    try:
+        llm_rails = await _get_rails([resolved_config_id])
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No guardrail configuration with id '{resolved_config_id}' found"
+        ) from e
+
+    config = llm_rails.config
+
+    # Helper to convert flow names to RuntimeRailFlowModel objects
+    def flows_to_models(rail_type: str, flows: Optional[List[str]]) -> List[RuntimeRailFlowModel]:
+        if not flows:
+            return []
+        return [RuntimeRailFlowModel(name=flow, type=rail_type) for flow in flows]
+
+    # Safe extraction of rail flows (they may not all be configured)
+    input_flows = config.rails.input.flows if config.rails.input else []
+    output_flows = config.rails.output.flows if config.rails.output else []
+    retrieval_flows = config.rails.retrieval.flows if config.rails.retrieval else []
+    # Dialog rails don't have flows; dialog is configured differently
+    dialog_flows = []
+    # Action rails don't have flows; actions are registered separately
+    action_flows = []
+    tool_input_flows = config.rails.tool_input.flows if config.rails.tool_input else []
+    tool_output_flows = config.rails.tool_output.flows if config.rails.tool_output else []
+
+    return RuntimeRailsResponse(
+        config_id=resolved_config_id,
+        input_rails=flows_to_models("input", input_flows),
+        output_rails=flows_to_models("output", output_flows),
+        retrieval_rails=flows_to_models("retrieval", retrieval_flows),
+        dialog_rails=flows_to_models("dialog", dialog_flows),
+        action_rails=flows_to_models("actions", action_flows),
+        tool_input_rails=flows_to_models("tool_input", tool_input_flows),
+        tool_output_rails=flows_to_models("tool_output", tool_output_flows),
+        colang_version=config.colang_version or "1.0",
+    )
+
+
+@app.get(
+    "/v1/runtime/actions",
+    response_model=RuntimeActionsResponse,
+    summary="Get registered actions.",
+)
+async def get_runtime_actions(config_id: Optional[str] = None):
+    """Returns the list of actions (built-in and custom) registered for a config."""
+    resolved_config_id = _resolve_config_id(config_id)
+
+    try:
+        llm_rails = await _get_rails([resolved_config_id])
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No guardrail configuration with id '{resolved_config_id}' found"
+        ) from e
+
+    # For now, we return an empty list of actions
+    # The action registry in LLMRails is managed by the Colang engine internals
+    # and is not easily exposed at this level. Future enhancement: integrate
+    # with the action registration system directly.
+    actions = []
+
+    return RuntimeActionsResponse(
+        config_id=resolved_config_id,
+        actions=actions,
+    )
+
+
+@app.get(
+    "/v1/runtime/config",
+    response_model=RuntimeConfigResponse,
+    summary="Get consolidated runtime configuration.",
+)
+async def get_runtime_config(config_id: Optional[str] = None):
+    """Returns consolidated configuration state for a guardrails deployment."""
+    resolved_config_id = _resolve_config_id(config_id)
+
+    try:
+        llm_rails = await _get_rails([resolved_config_id])
+    except ValueError as e:
+        raise HTTPException(
+            status_code=404,
+            detail=f"No guardrail configuration with id '{resolved_config_id}' found"
+        ) from e
+
+    config = llm_rails.config
+
+    # Convert models, excluding secret-bearing fields
+    models = []
+    for model in config.models:
+        models.append(
+            RuntimeModelModel(
+                type=model.type,
+                engine=model.engine,
+                model=model.model,
+                mode=model.mode or "chat",
+            )
+        )
+
+    # Helper to convert flow names to RuntimeRailFlowModel objects
+    def flows_to_models(rail_type: str, flows: Optional[List[str]]) -> List[RuntimeRailFlowModel]:
+        if not flows:
+            return []
+        return [RuntimeRailFlowModel(name=flow, type=rail_type) for flow in flows]
+
+    # Safe extraction of rail flows
+    input_flows = config.rails.input.flows if config.rails.input else []
+    output_flows = config.rails.output.flows if config.rails.output else []
+    retrieval_flows = config.rails.retrieval.flows if config.rails.retrieval else []
+    # Dialog rails don't have flows; dialog is configured differently
+    dialog_flows = []
+    # Action rails don't have flows; actions are registered separately
+    action_flows = []
+    tool_input_flows = config.rails.tool_input.flows if config.rails.tool_input else []
+    tool_output_flows = config.rails.tool_output.flows if config.rails.tool_output else []
+
+    # Build rails response
+    rails_response = RuntimeRailsResponse(
+        config_id=resolved_config_id,
+        input_rails=flows_to_models("input", input_flows),
+        output_rails=flows_to_models("output", output_flows),
+        retrieval_rails=flows_to_models("retrieval", retrieval_flows),
+        dialog_rails=flows_to_models("dialog", dialog_flows),
+        action_rails=flows_to_models("actions", action_flows),
+        tool_input_rails=flows_to_models("tool_input", tool_input_flows),
+        tool_output_rails=flows_to_models("tool_output", tool_output_flows),
+        colang_version=config.colang_version or "1.0",
+    )
+
+    # Extract flow names (flows is a list of flow dicts with 'id' field)
+    flow_names = [flow.get("id") for flow in config.flows] if config.flows else []
+
+    # Extract instruction content (instructions are Instruction objects with 'content' field)
+    instructions = [instr.content for instr in (config.instructions or [])]
+
+    # Count prompts
+    prompts_count = len(config.prompts) if config.prompts else 0
+
+    # Knowledge base info
+    embedding_model = None
+    if config.knowledge_base and config.knowledge_base.embedding_search_provider:
+        # Try to get the embedding model from the provider name or parameters
+        provider = config.knowledge_base.embedding_search_provider
+        embedding_model = provider.name if provider.name != "default" else None
+
+    knowledge_base = RuntimeKnowledgeBaseModel(
+        docs_count=len(config.docs) if config.docs else 0,
+        embedding_model=embedding_model,
+    )
+
+    return RuntimeConfigResponse(
+        config_id=resolved_config_id,
+        colang_version=config.colang_version or "1.0",
+        models=models,
+        rails=rails_response,
+        flows=flow_names,
+        instructions=instructions,
+        prompts_count=prompts_count,
+        knowledge_base=knowledge_base,
+    )
 
 
 def register_datastore(datastore_instance: DataStore):
