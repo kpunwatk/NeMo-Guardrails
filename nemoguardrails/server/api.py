@@ -859,6 +859,19 @@ async def get_challenges():
     return challenges
 
 
+def _runtime_config_not_found(exc: ValueError) -> bool:
+    """Return True when a ValueError from config load means the config_id is missing."""
+    message = str(exc)
+    return any(
+        fragment in message
+        for fragment in (
+            "No valid rails configuration found",
+            "Invalid config path",
+            "Invalid configuration ids",
+        )
+    )
+
+
 @app.get(
     "/v1/runtime/rails",
     response_model=RuntimeRailsResponse,
@@ -901,12 +914,12 @@ async def get_runtime_rails(config_id: Optional[str] = None):
         return response
 
     except ValueError as exc:
-        if "No valid rails configuration found" in str(exc):
+        if _runtime_config_not_found(exc):
             raise HTTPException(
                 status_code=404,
                 detail=f"No guardrail configuration with id '{config_id}' found",
-            )
-        raise HTTPException(status_code=400, detail=str(exc))
+            ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get(
@@ -947,16 +960,16 @@ async def get_runtime_actions(config_id: Optional[str] = None):
 
         # Load the configuration (validates config_id exists)
         rails = await _get_rails([config_id])
-        response = build_runtime_actions_response(config_id)
+        response = build_runtime_actions_response(config_id, rails)
         return response
 
     except ValueError as exc:
-        if "No valid rails configuration found" in str(exc):
+        if _runtime_config_not_found(exc):
             raise HTTPException(
                 status_code=404,
                 detail=f"No guardrail configuration with id '{config_id}' found",
-            )
-        raise HTTPException(status_code=400, detail=str(exc))
+            ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get(
@@ -1004,12 +1017,12 @@ async def get_runtime_config(config_id: Optional[str] = None):
         return response
 
     except ValueError as exc:
-        if "No valid rails configuration found" in str(exc):
+        if _runtime_config_not_found(exc):
             raise HTTPException(
                 status_code=404,
                 detail=f"No guardrail configuration with id '{config_id}' found",
-            )
-        raise HTTPException(status_code=400, detail=str(exc))
+            ) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def register_datastore(datastore_instance: DataStore):

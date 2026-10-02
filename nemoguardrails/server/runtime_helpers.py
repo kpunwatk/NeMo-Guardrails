@@ -21,6 +21,7 @@ defined in nemoguardrails.server.schemas.runtime.
 
 from typing import List, Optional
 
+from nemoguardrails import LLMRails
 from nemoguardrails.rails.llm.config import RailsConfig
 from nemoguardrails.server.schemas.runtime import (
     RuntimeActionModel,
@@ -141,30 +142,22 @@ def build_runtime_config_response(config_id: str, config: RailsConfig) -> Runtim
     )
 
 
-def build_runtime_actions_response(config_id: str) -> RuntimeActionsResponse:
-    """Build RuntimeActionsResponse for a configuration.
+def build_runtime_actions_response(config_id: str, rails: LLMRails) -> RuntimeActionsResponse:
+    """Build RuntimeActionsResponse from the config's live ActionDispatcher.
 
     Args:
         config_id: Configuration identifier
+        rails: Loaded LLMRails instance for this config
 
     Returns:
-        RuntimeActionsResponse with registered actions
+        RuntimeActionsResponse with registered action names.
+        description/parameters are omitted (null) until richer metadata is in scope.
     """
-    actions = []
-
-    # For Phase 2, we return an empty list until action dispatcher integration is added
-    # Future enhancement: Query ActionDispatcher for this config's registered actions
-    # actions = [
-    #     RuntimeActionModel(
-    #         name=action_name,
-    #         description=get_action_description(action_name),
-    #         source="built-in" if is_builtin_action(action_name) else "custom",
-    #         parameters=get_action_parameters(action_name),
-    #     )
-    #     for action_name in registered_actions
-    # ]
-
+    names = rails.runtime.action_dispatcher.get_registered_actions()
     return RuntimeActionsResponse(
         config_id=config_id,
-        actions=actions,
+        actions=[
+            RuntimeActionModel(name=name, description=None, source="unknown", parameters=None)
+            for name in sorted(names)
+        ],
     )

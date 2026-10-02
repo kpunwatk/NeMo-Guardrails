@@ -191,6 +191,12 @@ class TestRuntimeActionsEndpoint:
         assert "config_id" in data
         assert "actions" in data
         assert isinstance(data["actions"], list)
+        # Live ActionDispatcher should register at least one built-in action
+        assert len(data["actions"]) > 0
+        for action in data["actions"]:
+            assert "name" in action
+            assert isinstance(action["name"], str)
+            assert action["name"]
 
 
 class TestRuntimeConfigEndpoint:
