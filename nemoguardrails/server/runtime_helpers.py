@@ -19,8 +19,9 @@ These helpers convert RailsConfig instances into typed response models
 defined in nemoguardrails.server.schemas.runtime.
 """
 
-from typing import List, Optional
+from typing import List
 
+from nemoguardrails import LLMRails
 from nemoguardrails.rails.llm.config import RailsConfig
 from nemoguardrails.server.schemas.runtime import (
     RuntimeActionModel,
@@ -68,17 +69,16 @@ def build_runtime_models_list(config: RailsConfig) -> List[RuntimeModelModel]:
         config: RailsConfig instance
 
     Returns:
-        List of RuntimeModelModel (secrets filtered)
+        List of RuntimeModelModel with secrets (api_key_env_var, parameters) filtered
     """
     runtime_models = []
     for model in config.models:
-        # Exclude models with api_key_env_var set (indicates a sensitive integration)
         runtime_models.append(
             RuntimeModelModel(
                 type=model.type,
                 engine=model.engine,
                 model=model.model,
-                mode=model.mode,
+                mode=model.mode or "chat",
             )
         )
     return runtime_models
@@ -96,9 +96,12 @@ def build_runtime_knowledge_base(config: RailsConfig) -> RuntimeKnowledgeBaseMod
     docs_count = len(config.docs) if config.docs else 0
     embedding_model = None
 
-    # Try to extract embedding model name from knowledge_base config
-    if hasattr(config.knowledge_base, 'embedding_model'):
-        embedding_model = config.knowledge_base.embedding_model
+    # Extract embedding model name from embedding_search_provider
+    kb = getattr(config, 'knowledge_base', None)
+    if kb:
+        provider = getattr(kb, 'embedding_search_provider', None)
+        if provider:
+            embedding_model = getattr(provider, 'name', None)
 
     return RuntimeKnowledgeBaseModel(
         docs_count=docs_count,
@@ -141,30 +144,38 @@ def build_runtime_config_response(config_id: str, config: RailsConfig) -> Runtim
     )
 
 
-def build_runtime_actions_response(config_id: str) -> RuntimeActionsResponse:
-    """Build RuntimeActionsResponse for a configuration.
+def build_runtime_actions_response(config_id: str, rails: LLMRails) -> RuntimeActionsResponse:
+    """Build RuntimeActionsResponse from the config's live ActionDispatcher.
 
     Args:
         config_id: Configuration identifier
+        rails: Loaded LLMRails instance for this config
 
     Returns:
-        RuntimeActionsResponse with registered actions
+        RuntimeActionsResponse with registered action names and source classification.
+        description/parameters are omitted (null) as they require richer metadata.
     """
+    dispatcher = getattr(rails.runtime, "action_dispatcher", None)
+    if dispatcher is None:
+        return RuntimeActionsResponse(config_id=config_id, actions=[])
+
+    names = dispatcher.get_registered_actions()
     actions = []
 
-    # For Phase 2, we return an empty list until action dispatcher integration is added
-    # Future enhancement: Query ActionDispatcher for this config's registered actions
-    # actions = [
-    #     RuntimeActionModel(
-    #         name=action_name,
-    #         description=get_action_description(action_name),
-    #         source="built-in" if is_builtin_action(action_name) else "custom",
-    #         parameters=get_action_parameters(action_name),
-    #     )
-    #     for action_name in registered_actions
-    # ]
+    for name in sorted(names):
+        # Classify action source using dispatcher's manifest check
+        if hasattr(dispatcher, "is_manifest_action"):
+            source = "built-in" if dispatcher.is_manifest_action(name) else "custom"
+        else:
+            source = "unknown"
 
-    return RuntimeActionsResponse(
-        config_id=config_id,
-        actions=actions,
-    )
+        actions.append(
+            RuntimeActionModel(
+                name=name,
+                description=None,
+                source=source,
+                parameters=None,
+            )
+        )
+
+    return RuntimeActionsResponse(config_id=config_id, actions=actions)

@@ -47,7 +47,7 @@ class RuntimeModelModel(BaseModel):
 
     type: str = Field(description="Model type: 'main' for the primary LLM, 'embedding' for embeddings, etc.")
     engine: str = Field(description="LLM provider engine name: 'openai', 'azure', 'nim', 'huggingface', etc.")
-    model: str = Field(description="Model identifier or name within the engine (e.g., 'gpt-4', 'llama-2-7b').")
+    model: Optional[str] = Field(default=None, description="Model identifier or name within the engine (e.g., 'gpt-4', 'llama-2-7b'). May be null if model is specified only in parameters.")
     mode: str = Field(
         default="chat",
         description="Completion mode: 'chat' for multi-turn conversation or 'text' for single-turn text completion.",
@@ -81,7 +81,7 @@ class RuntimeRailsResponse(BaseModel):
 
     dialog_rails: List[RuntimeRailFlowModel] = Field(
         default_factory=list,
-        description="Flows that perform topical control and user intent classification.",
+        description="Dialog rail flows (currently always empty; dialog configuration uses intent/topic rules, not flows).",
     )
 
     action_rails: List[RuntimeRailFlowModel] = Field(
@@ -121,13 +121,13 @@ class RuntimeActionModel(BaseModel):
     )
 
     source: str = Field(
-        default="built-in",
-        description="Source of the action: 'built-in' for NeMo Guardrails library or 'custom' for user-defined actions.",
+        default="unknown",
+        description="Source classification: 'built-in' for catalog actions, 'custom' for user-registered actions, 'unknown' if source cannot be determined.",
     )
 
     parameters: Optional[Dict[str, Any]] = Field(
         default=None,
-        description="JSON Schema describing the parameters this action accepts. Omitted if not available.",
+        description="JSON Schema describing the parameters this action accepts. Currently always null; reserved for future use.",
     )
 
 
@@ -139,30 +139,6 @@ class RuntimeActionsResponse(BaseModel):
     actions: List[RuntimeActionModel] = Field(
         default_factory=list,
         description="Actions registered and available for use in this configuration's flows.",
-    )
-
-
-class RuntimePromptModel(BaseModel):
-    """A prompt template used by the LLM for a specific task.
-
-    Prompts are defined per-task (e.g., 'jailbreak_check', 'entity_extraction').
-    This schema includes task name and template structure without exposing
-    dynamic runtime values or interpolated secrets.
-    """
-
-    task: str = Field(description="Task identifier for which this prompt applies (e.g., 'jailbreak_check').")
-
-    template: str = Field(description="Prompt template in Jinja2 or similar format.")
-
-
-class RuntimeDocumentMetadata(BaseModel):
-    """Metadata for a document in the knowledge base."""
-
-    format: str = Field(description="Document format: 'pdf', 'txt', 'markdown', etc.")
-
-    size_bytes: Optional[int] = Field(
-        default=None,
-        description="Document size in bytes (if available).",
     )
 
 

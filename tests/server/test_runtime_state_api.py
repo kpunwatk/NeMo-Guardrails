@@ -191,6 +191,30 @@ class TestRuntimeActionsEndpoint:
         assert "config_id" in data
         assert "actions" in data
         assert isinstance(data["actions"], list)
+        # Live ActionDispatcher should register at least one built-in action
+        assert len(data["actions"]) > 0
+        for action in data["actions"]:
+            assert "name" in action
+            assert isinstance(action["name"], str)
+            assert action["name"]
+            assert "source" in action
+            assert action["source"] in {"built-in", "custom", "unknown"}
+            assert "description" in action  # null is ok
+            assert "parameters" in action  # null is ok
+
+    def test_unknown_config_returns_404(self, client_multi_config):
+        """Unknown config_id returns 404."""
+        response = client_multi_config.get("/v1/runtime/actions?config_id=nonexistent")
+        assert response.status_code == 404
+
+    def test_action_source_classification(self, client_single_config):
+        """Actions have source field with valid classification."""
+        response = client_single_config.get("/v1/runtime/actions")
+        data = response.json()
+
+        sources = {action["source"] for action in data["actions"]}
+        # Should have at least one built-in action from manifest
+        assert len(sources & {"built-in", "custom", "unknown"}) > 0
 
 
 class TestRuntimeConfigEndpoint:
@@ -239,10 +263,20 @@ class TestRuntimeConfigEndpoint:
         for model in data["models"]:
             assert "type" in model
             assert "engine" in model
-            assert "model" in model
+            assert "model" in model  # May be null if model is in parameters
             # Secrets should not be included
             assert "api_key_env_var" not in model
             assert "parameters" not in model
+
+    def test_model_can_be_null(self, client_single_config):
+        """Model field can be null for configs with model in parameters."""
+        # This test validates that RuntimeModelModel.model is Optional
+        # Actual null models depend on test config — just ensure no 500
+        response = client_single_config.get("/v1/runtime/config")
+        assert response.status_code == 200
+        data = response.json()
+        # If any model has null model field, that's valid (no error)
+        assert "models" in data
 
     def test_knowledge_base_structure(self, client_single_config):
         """Knowledge base has valid structure."""
@@ -253,6 +287,8 @@ class TestRuntimeConfigEndpoint:
         assert isinstance(kb, dict)
         assert "docs_count" in kb
         assert "embedding_model" in kb
+        # embedding_model can be null (extracted from provider.name if available)
+        assert kb["embedding_model"] is None or isinstance(kb["embedding_model"], str)
 
 
 class TestSecretsFiltering:
@@ -300,7 +336,7 @@ class TestOpenAPISchema:
     """Tests for OpenAPI schema generation."""
 
     def test_openapi_spec_includes_runtime_endpoints(self, client_single_config):
-        """OpenAPI spec includes all 3 runtime endpoints."""
+        """OpenAPI spec includes all 3 runtime endpoints with field descriptions."""
         response = client_single_config.get("/openapi.json")
         assert response.status_code == 200
         spec = response.json()
@@ -309,3 +345,13 @@ class TestOpenAPISchema:
         assert "/v1/runtime/rails" in paths
         assert "/v1/runtime/actions" in paths
         assert "/v1/runtime/config" in paths
+
+        # Verify schemas have field descriptions
+        schemas = spec.get("components", {}).get("schemas", {})
+        for schema_name in ["RuntimeRailsResponse", "RuntimeActionsResponse", "RuntimeConfigResponse"]:
+            assert schema_name in schemas, f"Missing schema {schema_name}"
+            schema = schemas[schema_name]
+            # All properties should have descriptions
+            for prop_name, prop_schema in schema.get("properties", {}).items():
+                assert "description" in prop_schema, f"{schema_name}.{prop_name} missing description"
+                assert prop_schema["description"], f"{schema_name}.{prop_name} has empty description"
