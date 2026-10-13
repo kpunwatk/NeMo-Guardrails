@@ -48,7 +48,10 @@ def setup_manifest():
 
 
 def test_manifest_returns_200_with_valid_document():
-    """GET on the manifest path returns 200 with fork identity and version populated."""
+    """GET /admin/info returns the fork capability manifest."""
+    # Outside /v1/* so the operator admin proxy (not the regular /v1 proxy) gates it.
+    assert MANIFEST_PATH == "/admin/info"
+
     response = client.get(MANIFEST_PATH)
 
     assert response.status_code == 200

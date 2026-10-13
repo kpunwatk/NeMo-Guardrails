@@ -43,9 +43,8 @@ log = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# NOTE: final path is pending alignment with the EvalHub team on a
-# platform-wide Agent Discoverability contract (RHAI-517 AC). Treat as
-# provisional until that alignment happens.
+# Administrative capability-discovery endpoint. Deployment-specific
+# authentication and proxy routing are enforced outside the application.
 MANIFEST_PATH = "/admin/info"
 
 # Tag applied to fork-specific HTTP routes that should appear in the manifest
