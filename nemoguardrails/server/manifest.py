@@ -33,6 +33,7 @@ from nemoguardrails.server.schemas.manifest import (
     CapabilityManifest,
     ManifestConfigSummary,
     ManifestDocumentationPointer,
+    ManifestEnabledFlows,
     ManifestEndpoint,
     ManifestIdentity,
     ManifestIntegration,
@@ -132,8 +133,16 @@ def _discover_fork_endpoints(routes) -> list[ManifestEndpoint]:
         if not path:
             continue
         description = _route_description(route)
+        deprecated = bool(getattr(route, "deprecated", False))
         for method in sorted(getattr(route, "methods", None) or []):
-            endpoints.append(ManifestEndpoint(path=path, method=method, description=description))
+            endpoints.append(
+                ManifestEndpoint(
+                    path=path,
+                    method=method,
+                    description=description,
+                    deprecated=deprecated,
+                )
+            )
     return endpoints
 
 
@@ -226,6 +235,22 @@ def _config_path(app, config_id: str) -> str:
     return os.path.join(app.rails_config_path, config_id)
 
 
+def _config_fingerprint(full_path: str) -> str:
+    """Cheap change detector for operator in-place config updates.
+
+    Uses the newest file mtime under the config directory so a ConfigMap
+    remount that keeps the same config id still invalidates the cached summary.
+    """
+    newest = 0.0
+    for root, _dirs, files in os.walk(full_path):
+        for name in files:
+            try:
+                newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+            except OSError:
+                continue
+    return str(newest)
+
+
 def _summarize_config(full_path: str):
     """Load a guardrails config and extract a safe structural summary.
 
@@ -236,26 +261,33 @@ def _summarize_config(full_path: str):
     """
     try:
         rails_config = RailsConfig.from_path(full_path)
-    except Exception:
-        log.warning("Skipping config at %s in manifest: failed to load", full_path, exc_info=True)
+    except Exception as exc:
+        # Log exception type only -- traceback / message can include config
+        # content (prompts, model parameters) that must not reach logs.
+        log.warning(
+            "Skipping config at %s in manifest: failed to load (%s)",
+            full_path,
+            type(exc).__name__,
+        )
         return None
 
     return ManifestConfigSummary(
         model_engines=sorted({model.engine for model in rails_config.models}),
-        enabled_flows=sorted(
-            set(rails_config.rails.input.flows)
-            | set(rails_config.rails.output.flows)
-            | set(rails_config.rails.retrieval.flows)
+        enabled_flows=ManifestEnabledFlows(
+            input=sorted(rails_config.rails.input.flows),
+            output=sorted(rails_config.rails.output.flows),
+            retrieval=sorted(rails_config.rails.retrieval.flows),
         ),
     )
 
 
 def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
-    """Rescan config ids and return summaries, caching per config id.
+    """Rescan config ids and return summaries, caching per config id + fingerprint.
 
     Config id discovery mirrors `/v1/rails/configs` on every call; expensive
-    `RailsConfig.from_path()` summarization runs only for ids not yet in
-    `app.manifest_config_cache`. Removed ids are evicted from the cache.
+    `RailsConfig.from_path()` summarization runs only when an id is new or its
+    on-disk fingerprint changed (operator config-change rollout). Removed ids
+    are evicted from the cache.
     """
     current_ids = _discover_config_ids(app)
     current_id_set = set(current_ids)
@@ -264,21 +296,29 @@ def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
         del app.manifest_config_cache[stale_id]
 
     for config_id in current_ids:
-        if config_id in app.manifest_config_cache:
+        full_path = _config_path(app, config_id)
+        fingerprint = _config_fingerprint(full_path)
+        cached = app.manifest_config_cache.get(config_id)
+        if cached is not None and cached[0] == fingerprint:
             continue
-        summary = _summarize_config(_config_path(app, config_id))
+        summary = _summarize_config(full_path)
         if summary is not None:
-            app.manifest_config_cache[config_id] = summary
+            app.manifest_config_cache[config_id] = (fingerprint, summary)
 
-    return {config_id: app.manifest_config_cache[config_id] for config_id in current_ids if config_id in app.manifest_config_cache}
+    return {
+        config_id: app.manifest_config_cache[config_id][1]
+        for config_id in current_ids
+        if config_id in app.manifest_config_cache
+    }
 
 
 def refresh_manifest_configs(app) -> None:
     """Refresh the manifest's config catalog from the current server state.
 
     Rescans config ids on every call (same as `/v1/rails/configs`) but reuses
-    cached summaries for ids already seen. Call before serving `/admin/info`
-    so newly mounted configs appear without re-summarizing the full catalog.
+    cached summaries when the id and content fingerprint are unchanged. Call
+    before serving `/admin/info` so newly mounted or updated configs appear
+    without always re-summarizing the full catalog.
     """
     if app.manifest is None:
         return
@@ -324,7 +364,8 @@ async def get_manifest(request: Request):
 
     Static sections (identity, endpoints, rails, integration) are generated
     once at startup; config ids are rescanned on each request and summaries
-    are cached per id so only newly seen configs pay summarization cost.
+    are cached per id + content fingerprint so only new or updated configs
+    pay summarization cost.
     """
     refresh_manifest_configs(request.app)
     return request.app.manifest

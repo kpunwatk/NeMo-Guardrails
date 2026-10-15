@@ -16,6 +16,7 @@
 """Tests for the fork discoverability capability manifest endpoint."""
 
 import shutil
+import time
 from pathlib import Path
 from urllib.parse import urlparse
 
@@ -62,13 +63,14 @@ def test_manifest_returns_200_with_valid_document():
 
 
 def test_manifest_lists_guardrail_checks_with_behavioral_contract():
-    """The endpoint catalog includes /v1/guardrail/checks with method and contract populated."""
+    """The endpoint catalog includes /v1/guardrail/checks with method, contract, and deprecation."""
     response = client.get(MANIFEST_PATH)
 
     endpoints = {e["path"]: e for e in response.json()["endpoints"]}
     assert "/v1/guardrail/checks" in endpoints
     assert endpoints["/v1/guardrail/checks"]["method"] == "POST"
     assert endpoints["/v1/guardrail/checks"]["description"]
+    assert endpoints["/v1/guardrail/checks"]["deprecated"] is True
 
 
 def test_manifest_excludes_upstream_and_actions_server_endpoints():
@@ -153,7 +155,11 @@ def test_manifest_lists_available_configs_with_structural_summary(monkeypatch):
     configs = response.json()["configs"]
     assert set(configs.keys()) == {c["id"] for c in configs_response.json()}
     assert configs["abc"]["model_engines"] == ["openai"]
-    assert configs["abc"]["enabled_flows"] == ["self check input", "self check output"]
+    assert configs["abc"]["enabled_flows"] == {
+        "input": ["self check input"],
+        "output": ["self check output"],
+        "retrieval": [],
+    }
 
 
 def test_manifest_does_not_leak_raw_config_content(monkeypatch):
@@ -240,6 +246,51 @@ def test_refresh_manifest_configs_only_summarizes_unseen_config_ids(tmp_path, mo
     client.get(MANIFEST_PATH)
     assert len(summarize_calls) == 1
     assert set(api.app.manifest.configs.keys()) == {"abc", "hello_world"}
+
+
+def test_refresh_manifest_configs_resummarizes_when_config_content_changes(tmp_path, monkeypatch):
+    """In-place config updates (same id, new content) invalidate the cached summary."""
+    bots_path = Path(utils.get_examples_data_path("bots"))
+    configs_root = tmp_path / "configs"
+    shutil.copytree(bots_path / "abc", configs_root / "abc")
+
+    summarize_calls: list[str] = []
+    original_summarize = manifest_module._summarize_config
+
+    def counting_summarize(full_path: str):
+        summarize_calls.append(full_path)
+        return original_summarize(full_path)
+
+    monkeypatch.setattr(manifest_module, "_summarize_config", counting_summarize)
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
+    api.app.manifest_config_cache = {}
+    api.app.manifest = build_manifest(api.app)
+    assert len(summarize_calls) == 1
+
+    summarize_calls.clear()
+    config_yml = configs_root / "abc" / "config.yml"
+    # Bump mtime after a short delay so the fingerprint changes on all filesystems.
+    time.sleep(0.05)
+    config_yml.write_text(config_yml.read_text() + "\n# operator rollout update\n")
+
+    response = client.get(MANIFEST_PATH)
+    assert len(summarize_calls) == 1
+    assert response.json()["configs"]["abc"]["enabled_flows"]["input"] == ["self check input"]
+
+
+def test_summarize_config_does_not_log_exception_details(tmp_path, caplog):
+    """Failed config loads log exception type only, not traceback or message body."""
+    bad_config = tmp_path / "broken"
+    bad_config.mkdir()
+    (bad_config / "config.yml").write_text("models: [::invalid::yaml")
+
+    with caplog.at_level("WARNING", logger="nemoguardrails.server.manifest"):
+        assert manifest_module._summarize_config(str(bad_config)) is None
+
+    assert "failed to load" in caplog.text
+    assert "Traceback" not in caplog.text
+    assert "exc_info" not in caplog.text
 
 
 def test_unregistered_path_near_manifest_returns_404():

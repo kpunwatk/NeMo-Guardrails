@@ -26,6 +26,10 @@ class ManifestEndpoint(BaseModel):
     path: str = Field(description="URL path of the endpoint.")
     method: str = Field(description="HTTP method for the endpoint.")
     description: str = Field(description="Behavioral contract describing what the endpoint does.")
+    deprecated: bool = Field(
+        default=False,
+        description="Whether FastAPI marks this route as deprecated (clients should prefer a successor).",
+    )
 
 
 class ManifestIdentity(BaseModel):
@@ -60,6 +64,14 @@ class ManifestRailModule(BaseModel):
     )
 
 
+class ManifestEnabledFlows(BaseModel):
+    """Rail flows enabled on a config, grouped by rail type."""
+
+    input: List[str] = Field(default_factory=list, description="Flows from rails.input.flows.")
+    output: List[str] = Field(default_factory=list, description="Flows from rails.output.flows.")
+    retrieval: List[str] = Field(default_factory=list, description="Flows from rails.retrieval.flows.")
+
+
 class ManifestConfigSummary(BaseModel):
     """Structural summary of a guardrails configuration -- not its raw content.
 
@@ -75,9 +87,9 @@ class ManifestConfigSummary(BaseModel):
         default_factory=list,
         description="Distinct model engine names configured (e.g. 'openai', 'nim'), not connection details.",
     )
-    enabled_flows: List[str] = Field(
-        default_factory=list,
-        description="Rail flow names enabled via rails.input/output/retrieval.flows.",
+    enabled_flows: ManifestEnabledFlows = Field(
+        default_factory=ManifestEnabledFlows,
+        description="Rail flow names enabled on this config, grouped by input/output/retrieval.",
     )
 
 

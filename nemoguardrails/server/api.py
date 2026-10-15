@@ -108,9 +108,10 @@ class GuardrailsApp(FastAPI):
         self.task: Optional[asyncio.Future] = None
         # Fork discoverability manifest; static sections generated once at startup,
         # config ids rescanned on each /admin/info request with summaries cached
-        # per config id (see manifest.py).
+        # per config id + content fingerprint (see manifest.py).
         self.manifest: Optional[CapabilityManifest] = None
-        self.manifest_config_cache: dict[str, ManifestConfigSummary] = {}
+        # config_id -> (fingerprint, summary); fingerprint invalidates in-place updates.
+        self.manifest_config_cache: dict[str, tuple[str, ManifestConfigSummary]] = {}
 
 
 # The list of registered loggers. Can be used to send logs to various
