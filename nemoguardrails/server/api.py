@@ -59,9 +59,6 @@ from nemoguardrails.server.exception_handlers import (
     rail_type_not_configured_error_handler,
     validation_error_handler,
 )
-from nemoguardrails.server.manifest import build_manifest
-from nemoguardrails.server.manifest import router as manifest_router
-from nemoguardrails.server.schemas.manifest import CapabilityManifest, ManifestConfigSummary
 from nemoguardrails.server.schemas.openai import (
     GuardrailCheckRequest,
     GuardrailCheckResponse,
@@ -106,12 +103,6 @@ class GuardrailsApp(FastAPI):
         self.single_config_id: Optional[str] = None
         self.loop: Optional[asyncio.AbstractEventLoop] = None
         self.task: Optional[asyncio.Future] = None
-        # Fork discoverability manifest; static sections generated once at startup,
-        # config ids rescanned on each /admin/info request with summaries cached
-        # per config id + content fingerprint (see manifest.py).
-        self.manifest: Optional[CapabilityManifest] = None
-        # config_id -> (fingerprint, summary); fingerprint invalidates in-place updates.
-        self.manifest_config_cache: dict[str, tuple[str, ManifestConfigSummary]] = {}
 
 
 # The list of registered loggers. Can be used to send logs to various
@@ -201,14 +192,8 @@ async def lifespan(app: GuardrailsApp):
             if config_module is not None and hasattr(config_module, "init"):
                 config_module.init(app)
 
-    # Generate the fork discoverability manifest from static metadata and live
-    # route introspection. Runs after single-config-mode detection above so the
-    # manifest's config catalog reflects final app state. Intentionally not
-    # wrapped in try/except: a broken or missing manifest should fail server
-    # startup outright rather than serve a stale/broken manifest or require the
-    # /v1/health liveness check (which has no dependency on server state today)
-    # to encode this failure.
-    app.manifest = build_manifest(app)
+    # Fork manifest init runs in nemoguardrails.server.manifest's router lifespan
+    # (nested inside this lifespan after single-config-mode is finalized).
 
     if app.auto_reload:
         app.loop = asyncio.get_running_loop()
@@ -839,11 +824,12 @@ async def guardrail_check(body: GuardrailCheckRequest, request: Request):
 # Include fork-specific checks endpoint router
 from nemoguardrails.server.checks import LegacyChecksDeprecationMiddleware  # noqa: E402
 from nemoguardrails.server.checks import router as checks_router  # noqa: E402
+from nemoguardrails.server.manifest import router as manifest_router  # noqa: E402
 
 app.include_router(checks_router)
 app.add_middleware(LegacyChecksDeprecationMiddleware)
 
-# Include fork discoverability manifest router
+# Fork discoverability manifest (state + startup live in manifest.py).
 app.include_router(manifest_router)
 
 

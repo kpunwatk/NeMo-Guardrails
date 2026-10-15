@@ -19,13 +19,21 @@ Extracted as its own module, following the pattern established by
 `nemoguardrails/server/checks.py`, to keep fork-only surface area out of
 api.py and reduce the conflict surface during upstream syncs. This module is
 fork-only and has no upstream equivalent.
+
+Manifest document and config-summary cache state are owned here and attached to
+the app at startup via the router lifespan (or `init_manifest()` in tests).
+`api.py` only needs `include_router(router)`.
 """
+
+from __future__ import annotations
 
 import inspect
 import logging
 import os
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, Optional
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, FastAPI, Request
 
 from nemoguardrails import RailsConfig, __version__
 from nemoguardrails.colang import parse_colang_file
@@ -42,11 +50,13 @@ from nemoguardrails.server.schemas.manifest import (
 
 log = logging.getLogger(__name__)
 
-router = APIRouter()
-
 # Administrative capability-discovery endpoint. Deployment-specific
 # authentication and proxy routing are enforced outside the application.
 MANIFEST_PATH = "/admin/info"
+
+# Private app attribute names for fork-only state (not declared on GuardrailsApp).
+_MANIFEST_ATTR = "_fork_capability_manifest"
+_CACHE_ATTR = "_fork_manifest_config_cache"
 
 # Tag applied to fork-specific HTTP routes that should appear in the manifest
 # catalog. Upstream routes (e.g. /v1/checks) and actions-server routes are
@@ -281,6 +291,18 @@ def _summarize_config(full_path: str):
     )
 
 
+def _get_config_cache(app) -> dict[str, tuple[str, ManifestConfigSummary]]:
+    cache = getattr(app, _CACHE_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(app, _CACHE_ATTR, cache)
+    return cache
+
+
+def _get_manifest_document(app) -> Optional[CapabilityManifest]:
+    return getattr(app, _MANIFEST_ATTR, None)
+
+
 def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
     """Rescan config ids and return summaries, caching per config id + fingerprint.
 
@@ -289,27 +311,24 @@ def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
     on-disk fingerprint changed (operator config-change rollout). Removed ids
     are evicted from the cache.
     """
+    cache = _get_config_cache(app)
     current_ids = _discover_config_ids(app)
     current_id_set = set(current_ids)
 
-    for stale_id in set(app.manifest_config_cache) - current_id_set:
-        del app.manifest_config_cache[stale_id]
+    for stale_id in set(cache) - current_id_set:
+        del cache[stale_id]
 
     for config_id in current_ids:
         full_path = _config_path(app, config_id)
         fingerprint = _config_fingerprint(full_path)
-        cached = app.manifest_config_cache.get(config_id)
+        cached = cache.get(config_id)
         if cached is not None and cached[0] == fingerprint:
             continue
         summary = _summarize_config(full_path)
         if summary is not None:
-            app.manifest_config_cache[config_id] = (fingerprint, summary)
+            cache[config_id] = (fingerprint, summary)
 
-    return {
-        config_id: app.manifest_config_cache[config_id][1]
-        for config_id in current_ids
-        if config_id in app.manifest_config_cache
-    }
+    return {config_id: cache[config_id][1] for config_id in current_ids if config_id in cache}
 
 
 def refresh_manifest_configs(app) -> None:
@@ -320,9 +339,10 @@ def refresh_manifest_configs(app) -> None:
     before serving `/admin/info` so newly mounted or updated configs appear
     without always re-summarizing the full catalog.
     """
-    if app.manifest is None:
+    document = _get_manifest_document(app)
+    if document is None:
         return
-    app.manifest.configs = _refresh_manifest_config_catalog(app)
+    document.configs = _refresh_manifest_config_catalog(app)
 
 
 def build_manifest(app) -> CapabilityManifest:
@@ -354,6 +374,34 @@ def build_manifest(app) -> CapabilityManifest:
     )
 
 
+def init_manifest(app) -> CapabilityManifest:
+    """Attach fork manifest state to `app` and build the startup catalog.
+
+    Called from the router lifespan after `api.py`'s lifespan has finalized
+    `single_config_mode`, and directly from tests that do not run lifespan.
+    """
+    setattr(app, _CACHE_ATTR, {})
+    document = build_manifest(app)
+    setattr(app, _MANIFEST_ATTR, document)
+    return document
+
+
+def reset_manifest(app) -> None:
+    """Clear fork manifest state on `app` (tests)."""
+    setattr(app, _MANIFEST_ATTR, None)
+    setattr(app, _CACHE_ATTR, {})
+
+
+@asynccontextmanager
+async def _manifest_lifespan(app: FastAPI) -> AsyncIterator[None]:
+    """Build the manifest once at startup; nested inside `api.py`'s lifespan."""
+    init_manifest(app)
+    yield
+
+
+router = APIRouter(lifespan=_manifest_lifespan)
+
+
 @router.get(
     MANIFEST_PATH,
     response_model=CapabilityManifest,
@@ -368,4 +416,4 @@ async def get_manifest(request: Request):
     pay summarization cost.
     """
     refresh_manifest_configs(request.app)
-    return request.app.manifest
+    return _get_manifest_document(request.app)

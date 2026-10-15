@@ -28,24 +28,22 @@ from fastapi.testclient import TestClient
 from nemoguardrails import utils
 from nemoguardrails.server import api
 from nemoguardrails.server import manifest as manifest_module
-from nemoguardrails.server.manifest import MANIFEST_PATH, build_manifest
+from nemoguardrails.server.manifest import MANIFEST_PATH, build_manifest, init_manifest, reset_manifest
 
 client = TestClient(api.app)
 
 
 @pytest.fixture(scope="function", autouse=True)
 def setup_manifest():
-    """Generate the manifest the same way `lifespan()` does at startup.
+    """Generate the manifest the same way the manifest router lifespan does at startup.
 
     TestClient does not run lifespan events unless used as a context manager,
     matching the convention already used by other server tests in this repo
-    (state is set directly on `api.app` rather than relying on startup).
+    (state is set via `init_manifest` rather than relying on startup).
     """
-    api.app.manifest_config_cache = {}
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
     yield
-    api.app.manifest = None
-    api.app.manifest_config_cache = {}
+    reset_manifest(api.app)
 
 
 def test_manifest_returns_200_with_valid_document():
@@ -111,7 +109,7 @@ def test_manifest_integration_metadata_present():
 def test_manifest_does_not_leak_env_var_values(monkeypatch):
     """The manifest describes config schema names, never actual configured values."""
     monkeypatch.setenv("MAIN_MODEL_BASE_URL", "http://internal-secret-host:1234")
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
 
     response = client.get(MANIFEST_PATH)
 
@@ -147,7 +145,7 @@ def test_manifest_lists_available_configs_with_structural_summary(monkeypatch):
     """
     monkeypatch.setattr(api.app, "single_config_mode", False)
     monkeypatch.setattr(api.app, "rails_config_path", utils.get_examples_data_path("bots"))
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
 
     response = client.get(MANIFEST_PATH)
     configs_response = client.get("/v1/rails/configs")
@@ -166,7 +164,7 @@ def test_manifest_does_not_leak_raw_config_content(monkeypatch):
     """The config summary excludes prompts/instructions -- config-author business logic."""
     monkeypatch.setattr(api.app, "single_config_mode", False)
     monkeypatch.setattr(api.app, "rails_config_path", utils.get_examples_data_path("bots"))
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
 
     response = client.get(MANIFEST_PATH)
 
@@ -180,7 +178,7 @@ def test_manifest_configs_reflect_single_config_mode(monkeypatch):
     monkeypatch.setattr(api.app, "single_config_mode", True)
     monkeypatch.setattr(api.app, "single_config_id", "hello_world")
     monkeypatch.setattr(api.app, "rails_config_path", single_config_path)
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
 
     response = client.get(MANIFEST_PATH)
 
@@ -197,7 +195,7 @@ def test_manifest_configs_refresh_after_new_config_added(tmp_path, monkeypatch):
 
     monkeypatch.setattr(api.app, "single_config_mode", False)
     monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
 
     initial_response = client.get(MANIFEST_PATH)
     assert set(initial_response.json()["configs"].keys()) == {"abc"}
@@ -232,8 +230,7 @@ def test_refresh_manifest_configs_only_summarizes_unseen_config_ids(tmp_path, mo
     monkeypatch.setattr(manifest_module, "_summarize_config", counting_summarize)
     monkeypatch.setattr(api.app, "single_config_mode", False)
     monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
-    api.app.manifest_config_cache = {}
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
 
     assert len(summarize_calls) == 1
 
@@ -245,7 +242,9 @@ def test_refresh_manifest_configs_only_summarizes_unseen_config_ids(tmp_path, mo
 
     client.get(MANIFEST_PATH)
     assert len(summarize_calls) == 1
-    assert set(api.app.manifest.configs.keys()) == {"abc", "hello_world"}
+    document = manifest_module._get_manifest_document(api.app)
+    assert document is not None
+    assert set(document.configs.keys()) == {"abc", "hello_world"}
 
 
 def test_refresh_manifest_configs_resummarizes_when_config_content_changes(tmp_path, monkeypatch):
@@ -264,8 +263,7 @@ def test_refresh_manifest_configs_resummarizes_when_config_content_changes(tmp_p
     monkeypatch.setattr(manifest_module, "_summarize_config", counting_summarize)
     monkeypatch.setattr(api.app, "single_config_mode", False)
     monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
-    api.app.manifest_config_cache = {}
-    api.app.manifest = build_manifest(api.app)
+    init_manifest(api.app)
     assert len(summarize_calls) == 1
 
     summarize_calls.clear()
@@ -291,6 +289,20 @@ def test_summarize_config_does_not_log_exception_details(tmp_path, caplog):
     assert "failed to load" in caplog.text
     assert "Traceback" not in caplog.text
     assert "exc_info" not in caplog.text
+
+
+def test_api_py_has_minimal_manifest_wiring():
+    """api.py only registers the fork router; state/init live in manifest.py."""
+    import inspect
+
+    import nemoguardrails.server.api as api_module
+
+    source = inspect.getsource(api_module)
+    assert "CapabilityManifest" not in source
+    assert "ManifestConfigSummary" not in source
+    assert "build_manifest" not in source
+    assert "init_manifest" not in source
+    assert "include_router(manifest_router)" in source
 
 
 def test_unregistered_path_near_manifest_returns_404():
