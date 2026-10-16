@@ -32,7 +32,8 @@ provisional pending EvalHub team alignment on a platform-wide Agent
 Discoverability contract. Check that file if this doesn't resolve.
 
 1. **Local dev server**: if the user is running `nemoguardrails server`
-   locally, fetch `http://<host>:<port>/admin/info` directly.
+   locally, fetch `http://<host>:<port>/admin/info` directly (plain HTTP;
+   no kube-rbac-proxy).
 2. **In-cluster deployment (via the TrustyAI operator)**: the URL is not
    hardcoded. Read it from the `NemoGuardrails` CR annotation
    `trustyai.opendatahub.io/nemo-guardrails-manifest-url`, e.g.:
@@ -42,17 +43,28 @@ Discoverability contract. Check that file if this doesn't resolve.
      -o jsonpath='{.metadata.annotations.trustyai\.opendatahub\.io/nemo-guardrails-manifest-url}'
    ```
 
-   This annotation is a cluster-internal Service URL — it is not reachable
-   directly from a developer workstation outside the cluster.
+   This annotation is a cluster-internal **HTTPS** Service URL on the admin
+   port (**444** → kube-rbac-proxy-admin on 8444; see
+   trustyai-service-operator PR #995). It is not reachable directly from a
+   developer workstation outside the cluster. Regular API traffic stays on
+   Service port 443; do not use that port for `/admin/info`.
 
 ## If The Manifest Is Unreachable
 
 The manifest endpoint has no external ingress by design (NeMo-Guardrails is a
 leaf component with no Route/HTTPRoute). If a direct GET fails:
 
-1. Tell the user to port-forward to the Service before retrying, e.g.:
-   `oc port-forward svc/<cr-name> <local-port>:<service-port>`, then fetch
-   `http://localhost:<local-port>/admin/info`.
+1. Tell the user to port-forward to the **admin** Service port before
+   retrying, then fetch over HTTPS (serving cert is cluster-internal, so
+   skip TLS verify locally), and pass a token authorized for admin access
+   (`create` on the NeMo Guardrails resource via kube-rbac-proxy):
+
+   ```text
+   oc port-forward svc/<cr-name> 4444:444 -n <namespace>
+   curl -k -H "Authorization: Bearer $(oc whoami -t)" \
+     https://localhost:4444/admin/info
+   ```
+
 2. If port-forwarding isn't possible or the user declines, say so explicitly
    and fall back to `CLAUDE.md`'s "Key fork changes" section as a
    best-effort, potentially stale answer — do not silently fabricate
