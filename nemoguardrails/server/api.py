@@ -59,22 +59,12 @@ from nemoguardrails.server.exception_handlers import (
     rail_type_not_configured_error_handler,
     validation_error_handler,
 )
-from nemoguardrails.server.runtime_helpers import (
-    build_runtime_actions_response,
-    build_runtime_config_response,
-    build_runtime_rails_response,
-)
 from nemoguardrails.server.schemas.openai import (
     GuardrailCheckRequest,
     GuardrailCheckResponse,
     GuardrailsChatCompletion,
     GuardrailsChatCompletionRequest,
     OpenAIModelsList,
-)
-from nemoguardrails.server.schemas.runtime import (
-    RuntimeActionsResponse,
-    RuntimeConfigResponse,
-    RuntimeRailsResponse,
 )
 from nemoguardrails.server.schemas.utils import (
     bot_message_to_chat_completion,
@@ -831,8 +821,10 @@ async def guardrail_check(body: GuardrailCheckRequest, request: Request):
 # Include fork-specific checks endpoint router
 from nemoguardrails.server.checks import LegacyChecksDeprecationMiddleware  # noqa: E402
 from nemoguardrails.server.checks import router as checks_router  # noqa: E402
+from nemoguardrails.server.runtime import router as runtime_router  # noqa: E402
 
 app.include_router(checks_router)
+app.include_router(runtime_router)
 app.add_middleware(LegacyChecksDeprecationMiddleware)
 
 
@@ -857,172 +849,6 @@ async def get_challenges():
     """Returns the list of available challenges for red teaming."""
 
     return challenges
-
-
-def _runtime_config_not_found(exc: ValueError) -> bool:
-    """Return True when a ValueError from config load means the config_id is missing."""
-    message = str(exc)
-    return any(
-        fragment in message
-        for fragment in (
-            "No valid rails configuration found",
-            "Invalid config path",
-            "Invalid configuration ids",
-        )
-    )
-
-
-@app.get(
-    "/v1/runtime/rails",
-    response_model=RuntimeRailsResponse,
-    summary="Get rails configuration and enabled flows.",
-)
-async def get_runtime_rails(config_id: Optional[str] = None):
-    """Return the parsed rails configuration for a guardrails deployment.
-
-    Args:
-        config_id: Configuration ID to retrieve. Required in multi-config mode;
-                   optional in single-config mode (uses default if omitted).
-
-    Returns:
-        RuntimeRailsResponse with all rail types and their enabled flows.
-
-    Raises:
-        HTTPException 400: config_id is missing in multi-config mode.
-        HTTPException 404: config_id does not exist.
-    """
-    try:
-        # Resolve config_id for single-config vs multi-config modes
-        if app.single_config_mode:
-            if config_id is None:
-                config_id = app.single_config_id
-            elif config_id != app.single_config_id:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No guardrail configuration with id '{config_id}' found",
-                )
-        else:
-            if config_id is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Missing required query parameter: config_id",
-                )
-
-        # Load the configuration
-        rails = await _get_rails([config_id])
-        response = build_runtime_rails_response(config_id, rails.config)
-        return response
-
-    except ValueError as exc:
-        if _runtime_config_not_found(exc):
-            raise HTTPException(
-                status_code=404,
-                detail=f"No guardrail configuration with id '{config_id}' found",
-            ) from exc
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get(
-    "/v1/runtime/actions",
-    response_model=RuntimeActionsResponse,
-    summary="Get registered actions for a configuration.",
-)
-async def get_runtime_actions(config_id: Optional[str] = None):
-    """Return the list of actions registered for a guardrails deployment.
-
-    Args:
-        config_id: Configuration ID to retrieve. Required in multi-config mode;
-                   optional in single-config mode (uses default if omitted).
-
-    Returns:
-        RuntimeActionsResponse with registered actions and their metadata.
-
-    Raises:
-        HTTPException 400: config_id is missing in multi-config mode.
-        HTTPException 404: config_id does not exist.
-    """
-    try:
-        # Resolve config_id for single-config vs multi-config modes
-        if app.single_config_mode:
-            if config_id is None:
-                config_id = app.single_config_id
-            elif config_id != app.single_config_id:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No guardrail configuration with id '{config_id}' found",
-                )
-        else:
-            if config_id is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Missing required query parameter: config_id",
-                )
-
-        # Load the configuration (validates config_id exists)
-        rails = await _get_rails([config_id])
-        response = build_runtime_actions_response(config_id, rails)
-        return response
-
-    except ValueError as exc:
-        if _runtime_config_not_found(exc):
-            raise HTTPException(
-                status_code=404,
-                detail=f"No guardrail configuration with id '{config_id}' found",
-            ) from exc
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-
-
-@app.get(
-    "/v1/runtime/config",
-    response_model=RuntimeConfigResponse,
-    summary="Get consolidated configuration state.",
-)
-async def get_runtime_config(config_id: Optional[str] = None):
-    """Return the complete parsed configuration for a guardrails deployment.
-
-    This endpoint consolidates configuration data from models, rails, flows,
-    instructions, and knowledge base into a single typed response.
-
-    Args:
-        config_id: Configuration ID to retrieve. Required in multi-config mode;
-                   optional in single-config mode (uses default if omitted).
-
-    Returns:
-        RuntimeConfigResponse with comprehensive configuration state.
-
-    Raises:
-        HTTPException 400: config_id is missing in multi-config mode.
-        HTTPException 404: config_id does not exist.
-    """
-    try:
-        # Resolve config_id for single-config vs multi-config modes
-        if app.single_config_mode:
-            if config_id is None:
-                config_id = app.single_config_id
-            elif config_id != app.single_config_id:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"No guardrail configuration with id '{config_id}' found",
-                )
-        else:
-            if config_id is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail="Missing required query parameter: config_id",
-                )
-
-        # Load the configuration
-        rails = await _get_rails([config_id])
-        response = build_runtime_config_response(config_id, rails.config)
-        return response
-
-    except ValueError as exc:
-        if _runtime_config_not_found(exc):
-            raise HTTPException(
-                status_code=404,
-                detail=f"No guardrail configuration with id '{config_id}' found",
-            ) from exc
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 def register_datastore(datastore_instance: DataStore):
