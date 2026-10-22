@@ -116,7 +116,7 @@ class CapabilityManifest(BaseModel):
     identity: ManifestIdentity
     endpoints: List[ManifestEndpoint] = Field(
         default_factory=list,
-        description="Catalog of fork-specific HTTP endpoints with behavioral contracts.",
+        description="Catalog of TrustyAI HTTP endpoints with behavioral contracts.",
     )
     documentation: List[ManifestDocumentationPointer] = Field(default_factory=list)
     integration: TrustyAINemoCRDVersion
@@ -126,8 +126,5 @@ class CapabilityManifest(BaseModel):
     )
     configs: Dict[str, ManifestConfigSummary] = Field(
         default_factory=dict,
-        description=(
-            "Guardrails configurations available on this server (same ids as /v1/rails/configs), "
-            "each with a structural summary -- not the raw config content."
-        ),
+        description="Guardrails configurations available on this server (same ids as /v1/rails/configs).",
     )

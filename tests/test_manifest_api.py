@@ -276,6 +276,39 @@ def test_refresh_manifest_configs_resummarizes_when_config_content_changes(tmp_p
     assert response.json()["configs"]["abc"]["enabled_flows"]["input"] == ["self check input"]
 
 
+def test_refresh_manifest_configs_drops_summary_when_config_becomes_unloadable(tmp_path, monkeypatch):
+    """A config that later fails to load must not keep serving its old summary."""
+    bots_path = Path(utils.get_examples_data_path("bots"))
+    configs_root = tmp_path / "configs"
+    shutil.copytree(bots_path / "abc", configs_root / "abc")
+
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
+    init_manifest(api.app)
+
+    initial = client.get(MANIFEST_PATH)
+    assert "abc" in initial.json()["configs"]
+
+    # Corrupt the config and bump mtime so the fingerprint changes.
+    time.sleep(0.05)
+    (configs_root / "abc" / "config.yml").write_text("models: [::invalid::yaml")
+
+    refreshed = client.get(MANIFEST_PATH)
+    assert "abc" not in refreshed.json()["configs"]
+
+    # Same broken fingerprint should not be re-summarized every request.
+    summarize_calls: list[str] = []
+    original_summarize = manifest_module._summarize_config
+
+    def counting_summarize(full_path: str):
+        summarize_calls.append(full_path)
+        return original_summarize(full_path)
+
+    monkeypatch.setattr(manifest_module, "_summarize_config", counting_summarize)
+    client.get(MANIFEST_PATH)
+    assert summarize_calls == []
+
+
 def test_summarize_config_does_not_log_exception_details(tmp_path, caplog):
     """Failed config loads log exception type only, not traceback or message body."""
     bad_config = tmp_path / "broken"

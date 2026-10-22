@@ -290,7 +290,7 @@ def _summarize_config(full_path: str):
     )
 
 
-def _get_config_cache(app) -> dict[str, tuple[str, ManifestConfigSummary]]:
+def _get_config_cache(app) -> dict[str, tuple[str, Optional[ManifestConfigSummary]]]:
     cache = getattr(app, _CACHE_ATTR, None)
     if cache is None:
         cache = {}
@@ -309,6 +309,10 @@ def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
     `RailsConfig.from_path()` summarization runs only when an id is new or its
     on-disk fingerprint changed (operator config-change rollout). Removed ids
     are evicted from the cache.
+
+    A failed summarization still records the fingerprint (with a None summary)
+    so a previously good entry is dropped from the returned catalog and we do
+    not keep serving a stale summary for a broken config.
     """
     cache = _get_config_cache(app)
     current_ids = _discover_config_ids(app)
@@ -324,10 +328,13 @@ def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
         if cached is not None and cached[0] == fingerprint:
             continue
         summary = _summarize_config(full_path)
-        if summary is not None:
-            cache[config_id] = (fingerprint, summary)
+        cache[config_id] = (fingerprint, summary)
 
-    return {config_id: cache[config_id][1] for config_id in current_ids if config_id in cache}
+    return {
+        config_id: summary
+        for config_id in current_ids
+        if (summary := cache[config_id][1]) is not None
+    }
 
 
 def refresh_manifest_configs(app) -> None:

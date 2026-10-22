@@ -192,9 +192,6 @@ async def lifespan(app: GuardrailsApp):
             if config_module is not None and hasattr(config_module, "init"):
                 config_module.init(app)
 
-    # Fork manifest init runs in nemoguardrails.server.manifest's router lifespan
-    # (nested inside this lifespan after single-config-mode is finalized).
-
     if app.auto_reload:
         app.loop = asyncio.get_running_loop()
         # Store the future directly as task
