@@ -73,19 +73,23 @@ class ManifestEnabledFlows(BaseModel):
 
 
 class ManifestConfigSummary(BaseModel):
-    """Structural summary of a guardrails configuration -- not its raw content.
+    """Structural summary of a mounted guardrails config.
 
-    Deliberately excludes prompts, instructions, sample_conversation, and model
-    connection details (`parameters`, `api_key_env_var`): this endpoint has no
-    built-in auth, and those fields can carry config-author business logic or
-    internal network details (e.g. a `base_url` in `Model.parameters`), the
-    same class of thing `config_schema` on `ManifestIntegration` already
-    avoids leaking for env vars.
+    Example::
+
+        {
+          "model_engines": ["openai"],
+          "enabled_flows": {
+            "input": ["self check input"],
+            "output": ["self check output"],
+            "retrieval": []
+          }
+        }
     """
 
     model_engines: List[str] = Field(
         default_factory=list,
-        description="Distinct model engine names configured (e.g. 'openai', 'nim'), not connection details.",
+        description="Distinct model engine names configured (e.g. 'openai', 'nim').",
     )
     enabled_flows: ManifestEnabledFlows = Field(
         default_factory=ManifestEnabledFlows,
@@ -93,10 +97,13 @@ class ManifestConfigSummary(BaseModel):
     )
 
 
-class ManifestIntegration(BaseModel):
-    """TrustyAI platform integration points."""
+class TrustyAINemoCRDVersion(BaseModel):
+    """Stores a snapshot of the TrustyAI NemoGuardrails CRD."""
 
-    crd: str = Field(description="NemoGuardrails CRD API group/version managing this deployment.")
+    crd: str = Field(
+        default="trustyai.opendatahub.io/v1alpha1",
+        description="NemoGuardrails CRD API group/version managing this deployment.",
+    )
     config_schema: dict[str, str] = Field(
         default_factory=dict,
         description="Configuration environment variables and what they control.",
@@ -112,7 +119,7 @@ class CapabilityManifest(BaseModel):
         description="Catalog of fork-specific HTTP endpoints with behavioral contracts.",
     )
     documentation: List[ManifestDocumentationPointer] = Field(default_factory=list)
-    integration: ManifestIntegration
+    integration: TrustyAINemoCRDVersion
     rails: List[ManifestRailModule] = Field(
         default_factory=list,
         description="Built-in guardrail library modules present in this build and the flows they provide.",

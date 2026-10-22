@@ -44,8 +44,8 @@ from nemoguardrails.server.schemas.manifest import (
     ManifestEnabledFlows,
     ManifestEndpoint,
     ManifestIdentity,
-    ManifestIntegration,
     ManifestRailModule,
+    TrustyAINemoCRDVersion,
 )
 
 log = logging.getLogger(__name__)
@@ -89,8 +89,7 @@ _FORK_DOCUMENTATION = [
         ),
     ),
 ]
-_FORK_INTEGRATION = ManifestIntegration(
-    crd="trustyai.opendatahub.io/v1alpha1",
+_FORK_INTEGRATION = TrustyAINemoCRDVersion(
     config_schema={
         "MAIN_MODEL_ENGINE": "LLM engine identifier for the primary model (e.g. openai).",
         "MAIN_MODEL_BASE_URL": "Base URL of the primary model's OpenAI-compatible endpoint.",

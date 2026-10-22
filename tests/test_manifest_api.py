@@ -136,8 +136,7 @@ def test_manifest_lists_available_configs_with_structural_summary(monkeypatch):
     Config discovery itself is an upstream capability (dates to the 0.1.0
     release, predates this fork), not a fork delta -- it's aggregated here,
     with a structural summary per config, purely for agent convenience per a
-    reviewer request on this PR. The summary is deliberately not the raw
-    config content (see ManifestConfigSummary's docstring for why).
+    reviewer request on this PR.
 
     Explicitly pins rails_config_path/single_config_mode rather than relying
     on api.app's defaults: it's a module-level singleton shared across test
