@@ -287,6 +287,10 @@ async def get_rails_configs():
         # And we use the name of the root folder as the id of the config.
         return [{"id": app.single_config_id}]
 
+    # Missing mount (e.g. operator path not ready yet) should not 500.
+    if not os.path.isdir(app.rails_config_path):
+        return []
+
     # We extract all folder names as config names
     config_ids = [
         f

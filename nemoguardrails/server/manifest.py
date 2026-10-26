@@ -27,6 +27,7 @@ the app at startup via the router lifespan (or `init_manifest()` in tests).
 
 from __future__ import annotations
 
+import hashlib
 import inspect
 import logging
 import os
@@ -228,12 +229,24 @@ def _discover_config_ids(app) -> list:
     if app.single_config_mode:
         return [app.single_config_id]
 
+    config_root = app.rails_config_path
+    # Missing/invalid roots must not take down server startup: the manifest
+    # router lifespan calls this during init, and operators may briefly point
+    # at a path that is not mounted yet.
+    if not os.path.isdir(config_root):
+        log.warning(
+            "Rails config path %r is missing or not a directory; "
+            "manifest config catalog will be empty",
+            config_root,
+        )
+        return []
+
     return sorted(
         f
-        for f in os.listdir(app.rails_config_path)
-        if os.path.isdir(os.path.join(app.rails_config_path, f))
+        for f in os.listdir(config_root)
+        if os.path.isdir(os.path.join(config_root, f))
         and f[0] not in (".", "_")
-        and _has_config_file(os.path.join(app.rails_config_path, f))
+        and _has_config_file(os.path.join(config_root, f))
     )
 
 
@@ -247,17 +260,27 @@ def _config_path(app, config_id: str) -> str:
 def _config_fingerprint(full_path: str) -> str:
     """Cheap change detector for operator in-place config updates.
 
-    Uses the newest file mtime under the config directory so a ConfigMap
-    remount that keeps the same config id still invalidates the cached summary.
+    Hashes each file's relative path and mtime under the config directory so
+    additions, deletions (including of older files), renames, and content
+    updates that bump mtime all invalidate the cached summary — not only
+    changes that raise the single newest mtime.
     """
-    newest = 0.0
+    if not os.path.isdir(full_path):
+        return "missing"
+
+    entries: list[str] = []
     for root, _dirs, files in os.walk(full_path):
         for name in files:
+            path = os.path.join(root, name)
             try:
-                newest = max(newest, os.path.getmtime(os.path.join(root, name)))
+                rel = os.path.relpath(path, full_path)
+                mtime = os.path.getmtime(path)
             except OSError:
                 continue
-    return str(newest)
+            entries.append(f"{rel}:{mtime}")
+    entries.sort()
+    digest = hashlib.sha256("\n".join(entries).encode()).hexdigest()
+    return f"{len(entries)}:{digest}"
 
 
 def _summarize_config(full_path: str):

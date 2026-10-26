@@ -15,6 +15,7 @@
 
 """Tests for the fork discoverability capability manifest endpoint."""
 
+import os
 import shutil
 import time
 from pathlib import Path
@@ -342,3 +343,38 @@ def test_unregistered_path_near_manifest_returns_404():
     response = client.get("/admin/info/does-not-exist")
 
     assert response.status_code == 404
+
+
+def test_lifespan_tolerates_missing_rails_config_path(monkeypatch):
+    """Server startup must not crash when rails_config_path does not exist.
+
+    The manifest router lifespan builds the config catalog at startup; a
+    missing mount must yield an empty catalog rather than FileNotFoundError.
+    """
+    monkeypatch.setattr(api.app, "rails_config_path", "/nonexistent/path")
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+
+    with TestClient(api.app) as live_client:
+        assert live_client.get("/v1/rails/configs").status_code == 200
+        manifest = live_client.get(MANIFEST_PATH)
+        assert manifest.status_code == 200
+        assert manifest.json()["configs"] == {}
+
+
+def test_config_fingerprint_changes_when_older_file_deleted(tmp_path):
+    """Deleting any file in a config dir must change the fingerprint.
+
+    Newest-mtime-only fingerprints miss deletions of older files (e.g. a
+    ConfigMap key removed on remount while other files keep a later mtime).
+    """
+    config_dir = tmp_path / "abc"
+    shutil.copytree(utils.get_examples_data_path("bots/abc"), config_dir)
+    files = sorted(p for p in config_dir.rglob("*") if p.is_file())
+    assert len(files) >= 2
+
+    fp_before = manifest_module._config_fingerprint(str(config_dir))
+    oldest = min(files, key=lambda p: p.stat().st_mtime)
+    os.utime(oldest, (1, 1))
+    oldest.unlink()
+
+    assert fp_before != manifest_module._config_fingerprint(str(config_dir))
