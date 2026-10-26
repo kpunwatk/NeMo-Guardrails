@@ -207,10 +207,10 @@ def test_manifest_configs_refresh_after_new_config_added(tmp_path, monkeypatch):
 
 
 def test_build_manifest_fails_when_no_fork_endpoints(monkeypatch):
-    """Startup fails if no routes carry the Fork Manifest tag."""
+    """Startup fails if no routes carry the TrustyAI manifest tag."""
     monkeypatch.setattr(manifest_module, "_discover_fork_endpoints", lambda routes: [])
 
-    with pytest.raises(RuntimeError, match="Fork Manifest"):
+    with pytest.raises(RuntimeError, match="TrustyAI"):
         build_manifest(api.app)
 
 
@@ -324,25 +324,23 @@ def test_summarize_config_does_not_log_exception_details(tmp_path, caplog):
     assert "exc_info" not in caplog.text
 
 
-def test_api_py_has_minimal_manifest_wiring():
-    """api.py only registers the fork router; state/init live in manifest.py."""
-    import inspect
-
-    import nemoguardrails.server.api as api_module
-
-    source = inspect.getsource(api_module)
-    assert "CapabilityManifest" not in source
-    assert "ManifestConfigSummary" not in source
-    assert "build_manifest" not in source
-    assert "init_manifest" not in source
-    assert "include_router(manifest_router)" in source
+def test_manifest_is_wired_through_app_lifespan():
+    """Manifest is built by router lifespan, not only by the test fixture."""
+    reset_manifest(api.app)
+    with TestClient(api.app) as lifespan_client:
+        response = lifespan_client.get(MANIFEST_PATH)
+        assert response.status_code == 200
+        assert response.json()["endpoints"]
 
 
-def test_unregistered_path_near_manifest_returns_404():
-    """A request to an unregistered path near the manifest returns 404, same as any missing route."""
-    response = client.get("/admin/info/does-not-exist")
-
-    assert response.status_code == 404
+def test_admin_route_exposes_only_manifest():
+    """Only /admin/info is mounted under /admin (admin-proxy surface)."""
+    admin_paths = {
+        path
+        for route in manifest_module._iter_routes(api.app.routes)
+        if (path := getattr(route, "path", None)) and path.startswith("/admin")
+    }
+    assert admin_paths == {MANIFEST_PATH}
 
 
 def test_lifespan_tolerates_missing_rails_config_path(monkeypatch):

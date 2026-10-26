@@ -829,8 +829,6 @@ from nemoguardrails.server.manifest import router as manifest_router  # noqa: E4
 
 app.include_router(checks_router)
 app.add_middleware(LegacyChecksDeprecationMiddleware)
-
-# Fork discoverability manifest (state + startup live in manifest.py).
 app.include_router(manifest_router)
 
 

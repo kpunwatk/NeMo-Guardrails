@@ -59,10 +59,10 @@ MANIFEST_PATH = "/admin/info"
 _MANIFEST_ATTR = "_fork_capability_manifest"
 _CACHE_ATTR = "_fork_manifest_config_cache"
 
-# Tag applied to fork-specific HTTP routes that should appear in the manifest
+# Tag applied to TrustyAI HTTP routes that should appear in the manifest
 # catalog. Upstream routes (e.g. /v1/checks) and actions-server routes are
 # intentionally untagged and therefore excluded from introspection here.
-FORK_MANIFEST_TAG = "Fork Manifest"
+FORK_MANIFEST_TAG = "TrustyAI"
 
 _FORK_NAME = "NeMo-Guardrails (TrustyAI fork)"
 _FORK_UPSTREAM_DELTA_SUMMARY = (
@@ -70,7 +70,7 @@ _FORK_UPSTREAM_DELTA_SUMMARY = (
     "configured input/output rails without generating an LLM response), forwards "
     "X-* request headers to configured LLM providers with auth-token redaction in "
     "logs, and ships a UBI9-based Dockerfile.server with baked-in models. See the "
-    "fork's CLAUDE.md \"Key fork changes\" section for the authoritative list."
+    'fork\'s CLAUDE.md "Key fork changes" section for the authoritative list.'
 )
 _FORK_DOCUMENTATION = [
     ManifestDocumentationPointer(
@@ -235,8 +235,7 @@ def _discover_config_ids(app) -> list:
     # at a path that is not mounted yet.
     if not os.path.isdir(config_root):
         log.warning(
-            "Rails config path %r is missing or not a directory; "
-            "manifest config catalog will be empty",
+            "Rails config path %r is missing or not a directory; manifest config catalog will be empty",
             config_root,
         )
         return []
@@ -353,11 +352,7 @@ def _refresh_manifest_config_catalog(app) -> dict[str, ManifestConfigSummary]:
         summary = _summarize_config(full_path)
         cache[config_id] = (fingerprint, summary)
 
-    return {
-        config_id: summary
-        for config_id in current_ids
-        if (summary := cache[config_id][1]) is not None
-    }
+    return {config_id: summary for config_id in current_ids if (summary := cache[config_id][1]) is not None}
 
 
 def refresh_manifest_configs(app) -> None:
@@ -436,13 +431,14 @@ router = APIRouter(lifespan=_manifest_lifespan)
     response_model=CapabilityManifest,
     summary="Fork capability discoverability manifest.",
 )
-async def get_manifest(request: Request):
+def get_manifest(request: Request):
     """Return the fork's capability manifest.
 
-    Static sections (identity, endpoints, rails, integration) are generated
-    once at startup; config ids are rescanned on each request and summaries
-    are cached per id + content fingerprint so only new or updated configs
-    pay summarization cost.
+    Sync so FastAPI runs the config-catalog refresh in a worker thread instead
+    of blocking the event loop. Static sections (identity, endpoints, rails,
+    integration) are generated once at startup; config ids are rescanned on
+    each request and summaries are cached per id + content fingerprint so only
+    new or updated configs pay summarization cost.
     """
     refresh_manifest_configs(request.app)
     return _get_manifest_document(request.app)
