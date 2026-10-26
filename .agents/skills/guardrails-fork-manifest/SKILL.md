@@ -49,59 +49,48 @@ Discoverability contract. Check that file if this doesn't resolve.
    developer workstation outside the cluster. Regular API traffic stays on
    Service port 443; do not use that port for `/admin/info`.
 
+## Handling Failures
+
+Do not treat an unreachable or incomplete manifest as a hard failure; degrade
+gracefully and say which step failed.
+
+| Failure | What to do |
+| --- | --- |
+| No server / connection refused / DNS failure | Tell the user the NeMo Guardrails server is not reachable at the URL you tried. Ask them to start `nemoguardrails server` locally or confirm the in-cluster Service/pod is up. Do not invent fork-specific endpoints. |
+| Manifest path 404 | Re-check `MANIFEST_PATH` in `nemoguardrails/server/manifest.py`. If still 404, say the deployment may not include the capability-manifest change yet (needs PR #69 / a build that ships it). |
+| HTTP 401 / 403 (caller lacks access) | Explain that `/admin/info` is gated by the operator admin kube-rbac-proxy (`create` on the NeMoGuardrails CR). Ask the user to use a token with that permission, or to port-forward with `oc whoami -t` as below. Do not retry endlessly. |
+| TLS / certificate errors on the admin URL | Expected for cluster-internal serving certs when port-forwarding; retry with TLS verify disabled (`curl -k`). If that still fails, report the TLS error verbatim. |
+| Annotation missing on the CR | Say the operator may not yet publish `trustyai.opendatahub.io/nemo-guardrails-manifest-url` (see trustyai-service-operator PR #1007). Fall back to constructing `https://<service>.<ns>.svc:444/admin/info` only if the user confirms the admin Service port, or use port-forward guidance. |
+| Port-forward not possible / user declines | Fall back to `CLAUDE.md`'s "Key fork changes" as a best-effort, potentially stale answer — and say so explicitly. Never silently fabricate fork-specific behavior. |
+| Server starts but config catalog is empty | Report that `configs` is empty; it may mean `rails_config_path` is missing/unmounted or no valid `config.yml` dirs were found. Still use `identity` / `endpoints` / `rails` if present. |
+
 ## If The Manifest Is Unreachable
 
 The manifest endpoint has no external ingress by design (NeMo-Guardrails is a
-leaf component with no Route/HTTPRoute). If a direct GET fails:
+leaf component with no Route/HTTPRoute). If a direct GET fails, prefer the
+table above. For in-cluster access from a workstation, the usual recovery is:
 
-1. Tell the user to port-forward to the **admin** Service port before
-   retrying, then fetch over HTTPS (serving cert is cluster-internal, so
-   skip TLS verify locally), and pass a token authorized for admin access
-   (`create` on the NeMo Guardrails resource via kube-rbac-proxy):
-
-   ```text
-   oc port-forward svc/<cr-name> 4444:444 -n <namespace>
-   curl -k -H "Authorization: Bearer $(oc whoami -t)" \
-     https://localhost:4444/admin/info
-   ```
-
-2. If port-forwarding isn't possible or the user declines, say so explicitly
-   and fall back to `CLAUDE.md`'s "Key fork changes" section as a
-   best-effort, potentially stale answer — do not silently fabricate
-   fork-specific behavior.
-
-Do not treat an unreachable manifest as a hard failure; degrade gracefully.
+```text
+oc port-forward svc/<cr-name> 4444:444 -n <namespace>
+curl -k -H "Authorization: Bearer $(oc whoami -t)" \
+  https://localhost:4444/admin/info
+```
 
 ## Using The Manifest Content
 
-The manifest (`CapabilityManifest` in
-`nemoguardrails/server/schemas/manifest.py`) has six sections:
+Do **not** hardcode the manifest field list in your reasoning. Before
+interpreting a response:
 
-- `identity` — fork name, installed `nemoguardrails` version, and a
-  human-written summary of how this fork diverges from upstream.
-- `endpoints` — the catalog of genuinely fork-specific HTTP endpoints (path,
-  method, behavioral contract). This list is deliberately narrow: endpoints
-  that exist upstream too, or that are served by the separate actions-server
-  process, are excluded even if they sound fork-related. Trust this list over
-  assumptions about what's "obviously" fork-specific.
-- `documentation` — pointers labeled by whether they're fork-specific or
-  upstream docs.
-- `integration` — the NemoGuardrails CRD API group/version and configuration
-  environment variables this deployment responds to.
-- `rails` — built-in guardrail library modules actually present in this
-  build, each with the Colang flow names they provide. Modules excluded at
-  build time (closed-source guardrails, per `scripts/filter_guardrails.py`)
-  simply won't appear here even though they exist upstream -- this is the
-  fork/upstream rail delta, not a list of everything NeMo Guardrails supports.
-- `configs` — a map of available guardrails config id to a structural summary
-  (model engines, enabled rail flows). This is deliberately not the raw
-  config content: prompts, instructions, and model connection details are
-  excluded since this endpoint has no built-in auth.
+1. Read the live schema in
+   `nemoguardrails/server/schemas/manifest.py` (`CapabilityManifest` and nested
+   models) for the current section names, field meanings, and descriptions.
+2. Fetch the live JSON from `/admin/info`.
+3. Quote the manifest's actual field values in the answer (e.g. the exact
+   endpoint path and behavioral contract text). Prefer the live payload over
+   static docs or memory so answers stay correct as the schema evolves.
 
-Quote the manifest's actual field values in the answer (e.g. the exact
-endpoint path and behavioral contract text) rather than paraphrasing from
-general knowledge of the codebase, so the answer stays correct as the
-manifest evolves.
+If the schema file and the live payload disagree (older deployment), trust the
+live payload for facts about that deployment, and note the version skew.
 
 ## Related Skills
 
