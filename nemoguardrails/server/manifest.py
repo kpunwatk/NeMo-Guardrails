@@ -31,6 +31,7 @@ import hashlib
 import inspect
 import logging
 import os
+import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
@@ -59,6 +60,10 @@ MANIFEST_PATH = "/admin/info"
 _MANIFEST_ATTR = "_fork_capability_manifest"
 _CACHE_ATTR = "_fork_manifest_config_cache"
 
+# `get_manifest` is sync, so FastAPI runs concurrent requests on worker
+# threads; the config cache and `document.configs` must be updated under a lock.
+_CONFIG_REFRESH_LOCK = threading.Lock()
+
 # Tag applied to TrustyAI HTTP routes that should appear in the manifest
 # catalog. Upstream routes (e.g. /v1/checks) and actions-server routes are
 # intentionally untagged and therefore excluded from introspection here.
@@ -66,18 +71,16 @@ FORK_MANIFEST_TAG = "TrustyAI"
 
 _FORK_NAME = "NeMo-Guardrails (TrustyAI fork)"
 _FORK_UPSTREAM_DELTA_SUMMARY = (
-    "Adds the /v1/guardrail/checks endpoint (evaluates messages against "
-    "configured input/output rails without generating an LLM response), forwards "
-    "X-* request headers to configured LLM providers with auth-token redaction in "
-    "logs, and ships a UBI9-based Dockerfile.server with baked-in models. See the "
-    'fork\'s CLAUDE.md "Key fork changes" section for the authoritative list.'
+    "Forwards X-* request headers to the configured LLM provider (see "
+    "integration.request_headers) and serves the fork-only endpoints listed in "
+    "`endpoints`. /v1/guardrail/checks is deprecated in favor of upstream /v1/checks."
 )
 _FORK_DOCUMENTATION = [
     ManifestDocumentationPointer(
         url="https://github.com/trustyai-explainability/NeMo-Guardrails/blob/develop/CLAUDE.md",
         description=(
-            "TrustyAI fork changes, fork-specific endpoints, and integration points. "
-            "Authoritative source for how this deployment diverges from upstream."
+            "Contributor notes on TrustyAI fork changes. May lag behind "
+            "this manifest, which is generated from the running server."
         ),
     ),
     ManifestDocumentationPointer(
@@ -94,8 +97,12 @@ _FORK_INTEGRATION = TrustyAINemoCRDVersion(
     config_schema={
         "MAIN_MODEL_ENGINE": "LLM engine identifier for the primary model (e.g. openai).",
         "MAIN_MODEL_BASE_URL": "Base URL of the primary model's OpenAI-compatible endpoint.",
-        "Authorization": (
-            "Forwarded as a request header to the configured LLM provider; redacted in logs, never persisted."
+    },
+    request_headers={
+        "Authorization": "Used for cluster/proxy authentication; never forwarded to the LLM provider.",
+        "X-Authorization": "Sent to the LLM provider as Authorization when the model has no static API key.",
+        "X-*": (
+            "Forwarded to the LLM provider, except X-Forwarded-*, X-Real-*, X-Request-Id, and X-Remote-* proxy headers."
         ),
     },
 )
@@ -192,29 +199,22 @@ def _discover_library_rails() -> list:
             if not file.endswith(".co"):
                 continue
             full_path = os.path.join(root, file)
-            with open(full_path, encoding="utf-8") as f:
-                content = parse_colang_file(file, content=f.read(), version=_RAIL_FLOWS_COLANG_VERSION)
+            try:
+                with open(full_path, encoding="utf-8") as f:
+                    content = parse_colang_file(file, content=f.read(), version=_RAIL_FLOWS_COLANG_VERSION)
+            except Exception as exc:
+                log.warning(
+                    "Skipping library file %s in manifest: failed to parse (%s)",
+                    full_path,
+                    type(exc).__name__,
+                )
+                continue
             if not content:
                 continue
             flow_names = {flow["id"] for flow in content.get("flows", []) if flow.get("id")}
             modules.setdefault(module_name, set()).update(flow_names)
 
     return [ManifestRailModule(name=name, flows=sorted(flows)) for name, flows in sorted(modules.items()) if flows]
-
-
-def _has_config_file(path: str) -> bool:
-    """Check if a directory (or its 'config' subdirectory) contains a config.yml/yaml.
-
-    Duplicated from `api.py`'s private helper of the same name rather than
-    imported: `api.py` imports this module at load time, so importing back
-    from it would create a circular import.
-    """
-    for candidate in (path, os.path.join(path, "config")):
-        if os.path.exists(os.path.join(candidate, "config.yml")) or os.path.exists(
-            os.path.join(candidate, "config.yaml")
-        ):
-            return True
-    return False
 
 
 def _discover_config_ids(app) -> list:
@@ -226,6 +226,8 @@ def _discover_config_ids(app) -> list:
     convenience. Must run after `lifespan()` finalizes `app.single_config_mode`
     / `app.single_config_id`, not before.
     """
+    from nemoguardrails.server.api import _has_config_file
+
     if app.single_config_mode:
         return [app.single_config_id]
 
@@ -287,8 +289,7 @@ def _summarize_config(full_path: str):
 
     Catches any loading/validation error narrowly to this one config: a
     single malformed config directory must not take down manifest generation
-    (and therefore server startup, since `build_manifest()` isn't wrapped in
-    try/except) for the whole deployment.
+    and server startup for the whole deployment.
     """
     try:
         rails_config = RailsConfig.from_path(full_path)
@@ -366,23 +367,23 @@ def refresh_manifest_configs(app) -> None:
     document = _get_manifest_document(app)
     if document is None:
         return
-    document.configs = _refresh_manifest_config_catalog(app)
+    with _CONFIG_REFRESH_LOCK:
+        document.configs = _refresh_manifest_config_catalog(app)
 
 
 def build_manifest(app) -> CapabilityManifest:
     """Build the capability manifest from static metadata and live route introspection.
 
-    Raises if no fork-specific routes are tagged for manifest discovery so
-    startup fails rather than serving a manifest with an empty endpoint catalog.
+    Missing endpoints, unparseable library files, and unloadable configs are
+    logged and left out rather than raised; this runs during server startup,
+    and a gap in a discovery document must not stop the guardrails server.
     """
     endpoints = _discover_fork_endpoints(app.routes)
     if not endpoints:
-        message = (
-            f"No routes tagged with {FORK_MANIFEST_TAG!r} were found; "
-            "the capability manifest cannot list fork-specific endpoints."
+        log.warning(
+            "No routes tagged with %r were found; the manifest endpoint catalog will be empty.",
+            FORK_MANIFEST_TAG,
         )
-        log.error(message)
-        raise RuntimeError(message)
 
     return CapabilityManifest(
         identity=ManifestIdentity(

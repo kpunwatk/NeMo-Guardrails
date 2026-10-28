@@ -108,6 +108,10 @@ class TrustyAINemoCRDVersion(BaseModel):
         default_factory=dict,
         description="Configuration environment variables and what they control.",
     )
+    request_headers: dict[str, str] = Field(
+        default_factory=dict,
+        description="Request headers this deployment forwards to, or opts out of, the LLM provider.",
+    )
 
 
 class CapabilityManifest(BaseModel):

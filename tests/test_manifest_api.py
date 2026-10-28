@@ -17,6 +17,7 @@
 
 import os
 import shutil
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -105,6 +106,17 @@ def test_manifest_integration_metadata_present():
     assert integration["crd"] == "trustyai.opendatahub.io/v1alpha1"
     assert "MAIN_MODEL_ENGINE" in integration["config_schema"]
     assert "MAIN_MODEL_BASE_URL" in integration["config_schema"]
+    assert "Authorization" not in integration["config_schema"]
+    assert "never forwarded" in integration["request_headers"]["Authorization"]
+    assert "X-Authorization" in integration["request_headers"]
+
+
+def test_manifest_delta_summary_flags_deprecated_checks_endpoint():
+    """The identity summary must not present the deprecated endpoint as current."""
+    summary = client.get(MANIFEST_PATH).json()["identity"]["upstream_delta_summary"]
+
+    assert "/v1/guardrail/checks is deprecated" in summary
+    assert "/v1/checks" in summary
 
 
 def test_manifest_does_not_leak_env_var_values(monkeypatch):
@@ -206,12 +218,40 @@ def test_manifest_configs_refresh_after_new_config_added(tmp_path, monkeypatch):
     assert set(refreshed_response.json()["configs"].keys()) == {"abc", "hello_world"}
 
 
-def test_build_manifest_fails_when_no_fork_endpoints(monkeypatch):
-    """Startup fails if no routes carry the TrustyAI manifest tag."""
+def test_build_manifest_tolerates_no_fork_endpoints(monkeypatch, caplog):
+    """No tagged routes yields an empty endpoint catalog and a warning, not a startup failure."""
     monkeypatch.setattr(manifest_module, "_discover_fork_endpoints", lambda routes: [])
 
-    with pytest.raises(RuntimeError, match="TrustyAI"):
-        build_manifest(api.app)
+    with caplog.at_level("WARNING", logger="nemoguardrails.server.manifest"):
+        document = build_manifest(api.app)
+
+    assert document.endpoints == []
+    assert "TrustyAI" in caplog.text
+
+
+def test_discover_library_rails_skips_unparseable_file(tmp_path, monkeypatch, caplog):
+    """A library .co file that fails to parse is skipped; other modules are still listed."""
+    (tmp_path / "good").mkdir()
+    (tmp_path / "good" / "flows.co").write_text("define flow good flow\n  bot say hi\n")
+    (tmp_path / "broken").mkdir()
+    (tmp_path / "broken" / "flows.co").write_text("BROKEN")
+
+    original_parse = manifest_module.parse_colang_file
+
+    def parse_or_fail(filename, content, version):
+        if content == "BROKEN":
+            raise ValueError("secret-looking parser detail")
+        return original_parse(filename, content=content, version=version)
+
+    monkeypatch.setattr(manifest_module, "_LIBRARY_PATH", str(tmp_path))
+    monkeypatch.setattr(manifest_module, "parse_colang_file", parse_or_fail)
+
+    with caplog.at_level("WARNING", logger="nemoguardrails.server.manifest"):
+        rails = {r.name: r.flows for r in manifest_module._discover_library_rails()}
+
+    assert rails == {"good": ["good flow"]}
+    assert "failed to parse (ValueError)" in caplog.text
+    assert "secret-looking parser detail" not in caplog.text
 
 
 def test_refresh_manifest_configs_only_summarizes_unseen_config_ids(tmp_path, monkeypatch):
@@ -308,6 +348,56 @@ def test_refresh_manifest_configs_drops_summary_when_config_becomes_unloadable(t
     monkeypatch.setattr(manifest_module, "_summarize_config", counting_summarize)
     client.get(MANIFEST_PATH)
     assert summarize_calls == []
+
+
+def test_refresh_manifest_configs_is_safe_under_concurrent_requests(tmp_path, monkeypatch):
+    """Concurrent refreshes while config dirs appear and disappear must not raise.
+
+    `get_manifest` is sync, so FastAPI serves concurrent requests on worker threads
+    that share the config cache.
+    """
+    bots_path = Path(utils.get_examples_data_path("bots"))
+    configs_root = tmp_path / "configs"
+    parked_root = tmp_path / "parked"
+    configs_root.mkdir()
+    parked_root.mkdir()
+    config_names = [f"hw{i}" for i in range(8)]
+    for name in config_names:
+        shutil.copytree(bots_path / "hello_world", configs_root / name)
+
+    monkeypatch.setattr(api.app, "single_config_mode", False)
+    monkeypatch.setattr(api.app, "rails_config_path", str(configs_root))
+    init_manifest(api.app)
+
+    errors: list[BaseException] = []
+    churn_done = threading.Event()
+
+    def churn():
+        try:
+            for i in range(400):
+                name = config_names[i % len(config_names)]
+                src, dst = (
+                    (configs_root, parked_root) if (configs_root / name).exists() else (parked_root, configs_root)
+                )
+                os.rename(src / name, dst / name)
+        finally:
+            churn_done.set()
+
+    def refresh():
+        while not churn_done.is_set():
+            try:
+                manifest_module.refresh_manifest_configs(api.app)
+            except BaseException as exc:
+                errors.append(exc)
+                return
+
+    threads = [threading.Thread(target=churn)] + [threading.Thread(target=refresh) for _ in range(4)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
 
 
 def test_summarize_config_does_not_log_exception_details(tmp_path, caplog):
